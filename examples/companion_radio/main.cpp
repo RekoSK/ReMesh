@@ -243,6 +243,37 @@ void setup() {
 }
 
 void loop() {
+#ifdef DEBUG_ADVERT_SECS
+  // Diagnostic only: the companion firmware never adverts unprompted (unlike the
+  // standalone examples, it ignores ENABLE_ADVERT_ON_BOOT), so there is no way to
+  // exercise the transmit path without a button press. -D DEBUG_ADVERT_SECS=n
+  // forces a self advert every n seconds.
+  {
+    static unsigned long next_dbg_advert = 5000;
+    if (millis() > next_dbg_advert) {
+      next_dbg_advert = millis() + (unsigned long)DEBUG_ADVERT_SECS * 1000;
+      MESH_DEBUG_PRINTLN("DEBUG: forcing self advert (zero-hop)");
+      bool ok = the_mesh.advert(false);
+      MESH_DEBUG_PRINTLN("DEBUG: advert() queued = %d", (uint32_t)ok);
+    }
+  }
+#endif
+
+#ifdef DEBUG_PMU_SECS
+  // Diagnostic only: report the charger state, since a board with no charge LED
+  // gives no other clue whether the battery is taking charge.
+  {
+    static unsigned long next_dbg_pmu = 2000;
+    if (millis() > next_dbg_pmu) {
+      next_dbg_pmu = millis() + (unsigned long)DEBUG_PMU_SECS * 1000;
+      MESH_DEBUG_PRINTLN("PMU: vbus=%d charging=%d batt=%dmV",
+                         (uint32_t)board.isExternalPowered(),
+                         (uint32_t)board.isCharging(),
+                         (uint32_t)board.getBattMilliVolts());
+    }
+  }
+#endif
+
   the_mesh.loop();
   sensors.loop();
 #ifdef DISPLAY_CLASS

@@ -27,7 +27,18 @@ static const uint8_t meshcore_logo [] PROGMEM = {
 };
 
 void UITask::begin(NodePrefs* node_prefs, const char* build_date, const char* firmware_version) {
+#ifdef PIN_USER_BTN
+  // ESP32 rejects digitalRead() on a pin that was never configured, so claim it
+  // before loop() starts polling. Pull against whichever way the button drives.
+  #if USER_BTN_PRESSED == HIGH
+    pinMode(PIN_USER_BTN, INPUT_PULLDOWN);
+  #else
+    pinMode(PIN_USER_BTN, INPUT_PULLUP);
+  #endif
+  _prevBtnState = digitalRead(PIN_USER_BTN);
+#else
   _prevBtnState = HIGH;
+#endif
   _auto_off = millis() + AUTO_OFF_MILLIS;
   _node_prefs = node_prefs;
   _display->turnOn();

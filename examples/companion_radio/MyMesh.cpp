@@ -63,6 +63,11 @@
 #define CMD_GET_DEFAULT_FLOOD_SCOPE   64
 #define CMD_SEND_RAW_PACKET           65
 
+// Node-discovery control payloads. Must match simple_repeater/MyMesh.cpp and
+// simple_sensor/SensorMesh.cpp, which define the same values locally.
+#define CTL_TYPE_NODE_DISCOVER_REQ    0x80
+#define CTL_TYPE_NODE_DISCOVER_RESP   0x90
+
 // Stats sub-types for CMD_GET_STATS
 #define STATS_TYPE_CORE               0
 #define STATS_TYPE_RADIO              1
@@ -381,6 +386,7 @@ void MyMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path
     strcpy(p->name, contact.name);
     p->recv_timestamp = getRTCClock()->getCurrentTime();
     p->path_len = mesh::Packet::copyPath(p->path, path, path_len);
+    p->snr4 = (int8_t)(_radio->getLastSNR() * 4);   // RAM only
   }
 
   if (!is_new) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY); // only schedule lazy write for contacts that are in contacts[]
@@ -388,6 +394,20 @@ void MyMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path
 
 static int sort_by_recent(const void *a, const void *b) {
   return ((AdvertPath *) b)->recv_timestamp - ((AdvertPath *) a)->recv_timestamp;
+}
+
+int MyMesh::getRecentlyHeardCount() {
+  qsort(advert_paths, ADVERT_PATH_TABLE_SIZE, sizeof(advert_paths[0]), sort_by_recent);
+  int n = 0;
+  for (int i = 0; i < ADVERT_PATH_TABLE_SIZE; i++) {
+    if (advert_paths[i].name[0] != 0) n++; else break;   // sorted, empties trail
+  }
+  return n;
+}
+
+const AdvertPath* MyMesh::getRecentlyHeardAt(int idx) {
+  if (idx < 0 || idx >= ADVERT_PATH_TABLE_SIZE) return NULL;
+  return &advert_paths[idx];
 }
 
 int MyMesh::getRecentlyHeard(AdvertPath dest[], int max_num) {
@@ -582,7 +602,7 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
   if (getChannel(channel_idx, channel_details)) {
     channel_name = channel_details.name;
   }
-  if (_ui) _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+  if (_ui) _ui->newChannelMsg(channel_idx, channel_name, path_len, text, offline_queue_len);
 #endif
 }
 
@@ -775,6 +795,25 @@ void MyMesh::onControlDataRecv(mesh::Packet *packet) {
     MESH_DEBUG_PRINTLN("onControlDataRecv(), payload_len too long: %d", packet->payload_len);
     return;
   }
+
+#ifdef DISPLAY_CLASS
+  // a reply to our own device-side scan? resp: [0]=type|node_type [1]=SNRx4
+  // [2..5]=echoed tag  [6..]=pub key (8 bytes when prefix_only was requested)
+  if (_ui && _discover_tag != 0 && packet->payload_len >= 6
+      && (packet->payload[0] & 0xF0) == CTL_TYPE_NODE_DISCOVER_RESP) {
+    uint32_t tag;
+    memcpy(&tag, &packet->payload[2], 4);
+    if (tag == _discover_tag) {
+      // payload[1] is the SNR *they* heard us at (x4); getLastSNR() is the SNR
+      // *we* heard them at. Together those are the two directions of the link.
+      _ui->nodeDiscovered(packet->payload[0] & 0x0F,
+                          (int8_t)(_radio->getLastSNR() * 4),   // inbound (us <- them)
+                          (int8_t)packet->payload[1],           // outbound (them <- us)
+                          &packet->payload[6], packet->payload_len - 6);
+    }
+  }
+#endif
+
   int i = 0;
   out_frame[i++] = PUSH_CODE_CONTROL_DATA;
   out_frame[i++] = (int8_t)(_radio->getLastSNR() * 4);
@@ -857,6 +896,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
       _serial(NULL), telemetry(MAX_PACKET_PAYLOAD - 4), _store(&store), _ui(ui) {
   _iter_started = false;
   _cli_rescue = false;
+  _discover_tag = 0;
   offline_queue_len = 0;
   app_target_ver = 0;
   clearPendingReqs();
@@ -2233,7 +2273,44 @@ void MyMesh::loop() {
 #endif
 }
 
-bool MyMesh::advert() {
+bool MyMesh::discoverNearby() {
+  // req: [0]=type|prefix_only  [1]=node-type filter  [2..5]=tag  ([6..9]=since)
+  uint8_t data[6];
+  _discover_tag = getRNG()->nextInt(1, 0x7FFFFFFF);
+  // bit0 clear: ask for the FULL 32-byte key, not the 8-byte prefix. We need it
+  // to build a real ContactInfo when the user adds the repeater from the device.
+  data[0] = CTL_TYPE_NODE_DISCOVER_REQ;
+  data[1] = (1 << ADV_TYPE_REPEATER);
+  memcpy(&data[2], &_discover_tag, 4);
+
+  auto pkt = createControlData(data, sizeof(data));
+  if (pkt == NULL) return false;
+  sendZeroHop(pkt);
+  MESH_DEBUG_PRINTLN("discoverNearby(): sent, tag=%u", _discover_tag);
+  return true;
+}
+
+// Add a scanned repeater to contacts, named by the first 4 hex chars of its key.
+// false = contact table full.
+bool MyMesh::addRepeaterContact(const uint8_t* pub_key, const char* name) {
+  ContactInfo c;
+  memset(&c, 0, sizeof(c));
+  c.id = mesh::Identity(pub_key);
+  StrHelper::strncpy(c.name, name, sizeof(c.name));
+  c.type = ADV_TYPE_REPEATER;
+  c.flags = 0;
+  c.out_path_len = OUT_PATH_UNKNOWN;    // no known route yet
+  c.last_advert_timestamp = 0;
+  c.lastmod = getRTCClock()->getCurrentTime();
+  c.gps_lat = c.gps_lon = 0;
+  c.sync_since = 0;
+
+  if (!addContact(c)) return false;     // no free slot
+  dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  return true;
+}
+
+bool MyMesh::advert(bool flood) {
   mesh::Packet* pkt;
   if (_prefs.advert_loc_policy == ADVERT_LOC_NONE) {
     pkt = createSelfAdvert(_prefs.node_name);
@@ -2241,7 +2318,13 @@ bool MyMesh::advert() {
     pkt = createSelfAdvert(_prefs.node_name, sensors.node_lat, sensors.node_lon);
   }
   if (pkt) {
-    sendZeroHop(pkt);
+    if (flood) {   // same path CMD_SEND_SELF_ADVERT takes for its flood option
+      TransportKey default_scope;
+      memcpy(&default_scope.key, _prefs.default_scope_key, sizeof(default_scope.key));
+      sendFloodScoped(default_scope, pkt, 0);
+    } else {
+      sendZeroHop(pkt);
+    }
     return true;
   } else {
     return false;

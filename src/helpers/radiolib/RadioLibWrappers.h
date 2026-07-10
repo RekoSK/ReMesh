@@ -32,6 +32,10 @@ public:
   bool isInRecvMode() const override;
   bool isChannelActive();
 
+  // Called when a radio call fails, so the concrete wrapper can dump chip state.
+  // Default no-op; costs nothing on radios that don't implement it.
+  virtual void logRadioFault(const char* where, int err) { }
+
   bool isReceiving() override { 
     if (isReceivingPacket()) return true;
 

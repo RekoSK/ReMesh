@@ -1,0 +1,8 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Base.Theme.ReMesh" parent="Theme.Material3.DayNight.NoActionBar">
+        <!-- True black behind the Compose content, so launching the app doesn't
+             flash a grey window on an OLED panel before the first frame draws. -->
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

@@ -109,6 +109,7 @@ void RadioLibWrapper::startRecv() {
     state = STATE_RX;
   } else {
     MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
+    logRadioFault("startReceive", err);
   }
 }
 
@@ -141,6 +142,7 @@ int RadioLibWrapper::recvRaw(uint8_t* bytes, int sz) {
       state = STATE_RX;
     } else {
       MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startReceive(%d)", err);
+      logRadioFault("startReceive", err);
     }
   }
   return len;
@@ -158,6 +160,7 @@ bool RadioLibWrapper::startSendRaw(const uint8_t* bytes, int len) {
     return true;
   }
   MESH_DEBUG_PRINTLN("RadioLibWrapper: error: startTransmit(%d)", err);
+  logRadioFault("startTransmit", err);
   idle();   // trigger another startRecv()
   _board->onAfterTransmit();
   return false;

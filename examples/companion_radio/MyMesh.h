@@ -5,14 +5,19 @@
 #include "AbstractUITask.h"
 
 /*------------ Frame Protocol --------------*/
+// Protocol capability level the phone app negotiates against. This, NOT the
+// FIRMWARE_VERSION string below, is what gates app compatibility. Leave at the
+// upstream value even when rebranding the version string.
 #define FIRMWARE_VER_CODE 13
 
 #ifndef FIRMWARE_BUILD_DATE
 #define FIRMWARE_BUILD_DATE "6 Jun 2026"
 #endif
 
+// Display-only string, sent to the app as free text and shown on the splash
+// screen. ReCore rebrand of upstream v1.16.0.
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "v1.16.0"
+#define FIRMWARE_VERSION "Re16"
 #endif
 
 #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
@@ -82,6 +87,7 @@ struct AdvertPath {
   char    name[32];
   uint32_t recv_timestamp;
   uint8_t path[MAX_PATH_SIZE];
+  int8_t  snr4;      // SNR the advert arrived at, x4. RAM only, never persisted.
 };
 
 class MyMesh : public BaseChatMesh, public DataStoreHost {
@@ -97,10 +103,24 @@ public:
 
   void loop();
   void handleCmdFrame(size_t len);
-  bool advert();
+  bool advert(bool flood = false);   // flood = repeaters re-broadcast it
+
+  // Zero-hop "who is out there" ping. Repeaters in direct radio range reply with
+  // a CTL_TYPE_NODE_DISCOVER_RESP after a randomised delay; replies are handed to
+  // the UI via AbstractUITask::nodeDiscovered(). Same mechanism the phone app's
+  // "discover nearby nodes" uses, but driven from the device.
+  bool discoverNearby();
+
+  // Add a scanned repeater to contacts. Returns false if the table is full.
+  bool addRepeaterContact(const uint8_t* pub_key, const char* name);
   void enterCLIRescue();
 
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
+
+  // Sorted view over the RAM advert-path table, without copying it. Call
+  // getRecentlyHeardCount() first: it does the sort.
+  int  getRecentlyHeardCount();
+  const AdvertPath* getRecentlyHeardAt(int idx);
 
 protected:
   float getAirtimeBudgetFactor() const override;
@@ -202,6 +222,8 @@ private:
   // helpers, short-cuts
   void saveChannels() { _store->saveChannels(this); }
   void saveContacts();
+
+  uint32_t _discover_tag;   // 0 = no scan outstanding; else the tag replies must echo
 
   DataStore* _store;
   NodePrefs _prefs;

@@ -1,0 +1,126 @@
+================================================================================
+ MeshCore - arduino-cli upload commands
+================================================================================
+
+Build first, then flash. Firmware lands in out/ :
+
+    ./build2.sh build-firmware ESP32C6_SX1276_SH1106_companion_radio_ble
+    ./build2.sh build-firmware Tbeam_SX1276_companion_radio_ble
+
+Check which port your board is on before flashing:
+
+    ls /dev/ttyUSB* /dev/ttyACM*
+
+  ESP32-C6  -> native USB, usually /dev/ttyACM0
+  T-Beam    -> CP2102 USB-UART bridge, usually /dev/ttyUSB0
+
+
+--------------------------------------------------------------------------------
+ MERGED  vs  NON-MERGED  -- read this before picking a command
+--------------------------------------------------------------------------------
+
+MERGED (*-merged.bin) + full erase (-e), written at 0x0
+    Bootloader + partition table + app in one image.
+    WIPES EVERYTHING: node identity/private key, contacts, channels, prefs.
+    After this the node looks like a brand new device to anyone who had it
+    saved as a contact.
+    Use for: first install on a fresh board, or recovering a bricked board.
+
+NON-MERGED (plain .bin), no erase, written at 0x10000
+    App only. Bootloader, partition table and the NVS/filesystem are left
+    alone, so identity, contacts and channels survive.
+    Use for: updating firmware on a board you already use.
+
+0x10000 is where app0 begins under min_spiffs.csv, which every env here uses.
+(Verified: the plain .bin is byte-identical to offset 0x10000 of the merged
+image, on both the C6 and the T-Beam.)
+
+The merged image is padded from 0x0, so it is written at 0x0 on BOTH boards
+even though the C6 bootloader lives at 0x0 and the classic ESP32 bootloader
+lives at 0x1000. Do not "fix" this to 0x1000 for the T-Beam.
+
+
+================================================================================
+ ESP32-C6  (DIY board: SX1276 + SH1106)      FQBN esp32:esp32:esp32c6
+================================================================================
+
+--- FIRST INSTALL -- merged, full erase, WIPES CONTACTS + IDENTITY -------------
+
+arduino-cli upload \
+  -b esp32:esp32:esp32c6 \
+  -p /dev/ttyACM0 \
+  -i out/ESP32C6_SX1276_SH1106_companion_radio_ble-Re16-merged.bin \
+  --upload-property upload.erase_cmd=-e \
+  --upload-property 'upload.pattern_args=--chip {build.mcu} --port "{serial.port}" --baud {upload.speed} {upload.flags} --before default-reset --after hard-reset write-flash {upload.erase_cmd} -z --flash-mode keep --flash-freq keep --flash-size keep 0x0 "{build.path}/{build.project_name}.bin" {upload.extra_flags}'
+
+--- UPDATE -- app only, no erase, KEEPS CONTACTS + IDENTITY --------------------
+
+arduino-cli upload \
+  -b esp32:esp32:esp32c6 \
+  -p /dev/ttyACM0 \
+  -i out/ESP32C6_SX1276_SH1106_companion_radio_ble-Re16.bin \
+  --upload-property upload.erase_cmd= \
+  --upload-property 'upload.pattern_args=--chip {build.mcu} --port "{serial.port}" --baud {upload.speed} {upload.flags} --before default-reset --after hard-reset write-flash {upload.erase_cmd} -z --flash-mode keep --flash-freq keep --flash-size keep 0x10000 "{build.path}/{build.project_name}.bin" {upload.extra_flags}'
+
+
+================================================================================
+ LilyGo T-Beam v1.2 (AXP2101, SX1276)        FQBN esp32:esp32:t-beam
+================================================================================
+
+The AXP2101 needs no special firmware. TBeamBoard.cpp probes I2C at boot and
+picks AXP192 (v1.1) or AXP2101 (v1.2) at runtime.
+
+If your board has an SX1262 instead, swap Tbeam_SX1276_* for Tbeam_SX1262_*
+everywhere below.
+
+--- FIRST INSTALL -- merged, full erase, WIPES CONTACTS + IDENTITY -------------
+
+arduino-cli upload \
+  -b esp32:esp32:t-beam \
+  -p /dev/ttyUSB0 \
+  -i out/Tbeam_SX1276_companion_radio_ble-Re16-merged.bin \
+  --upload-property upload.erase_cmd=-e \
+  --upload-property 'upload.pattern_args=--chip {build.mcu} --port "{serial.port}" --baud {upload.speed} {upload.flags} --before default-reset --after hard-reset write-flash {upload.erase_cmd} -z --flash-mode keep --flash-freq keep --flash-size keep 0x0 "{build.path}/{build.project_name}.bin" {upload.extra_flags}'
+
+--- UPDATE -- app only, no erase, KEEPS CONTACTS + IDENTITY --------------------
+
+arduino-cli upload \
+  -b esp32:esp32:t-beam \
+  -p /dev/ttyUSB0 \
+  -i out/Tbeam_SX1276_companion_radio_ble-Re16.bin \
+  --upload-property upload.erase_cmd= \
+  --upload-property 'upload.pattern_args=--chip {build.mcu} --port "{serial.port}" --baud {upload.speed} {upload.flags} --before default-reset --after hard-reset write-flash {upload.erase_cmd} -z --flash-mode keep --flash-freq keep --flash-size keep 0x10000 "{build.path}/{build.project_name}.bin" {upload.extra_flags}'
+
+
+================================================================================
+ Notes
+================================================================================
+
+Version in the filename tracks FIRMWARE_VERSION, which build2.sh reads from
+examples/companion_radio/MyMesh.h (currently Re16). If you bump that header
+the filenames change -- adjust the -i paths accordingly.
+
+Simpler alternative, lets PlatformIO work out offsets and baud rate itself,
+and does a normal (non-erasing) app flash:
+
+    ./build2.sh upload ESP32C6_SX1276_SH1106_companion_radio_ble
+    ./build2.sh upload Tbeam_SX1276_companion_radio_ble
+
+Other envs you can build and flash the same way -- substitute the name in the
+-i path and rebuild:
+
+    ESP32C6_SX1276_SH1106_companion_radio_ble
+    ESP32C6_SX1276_SH1106_companion_radio_usb
+    ESP32C6_SX1276_SH1106_repeater
+    ESP32C6_SX1276_SH1106_room_server
+    ESP32C6_SX1276_SH1106_kiss_modem
+
+    Tbeam_SX1276_companion_radio_ble
+    Tbeam_SX1276_repeater
+    Tbeam_SX1276_room_server
+    Tbeam_SX1276_kiss_modem
+
+Full list:  ./build2.sh list
+
+If the T-Beam fails to sync at 921600 baud, drop the speed:
+add  --upload-property upload.speed=460800

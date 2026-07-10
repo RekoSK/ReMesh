@@ -21,6 +21,35 @@
 
 #include "../AbstractUITask.h"
 #include "../NodePrefs.h"
+#include "MsgStore.h"
+
+// Results of a device-side node scan. Kept in RAM only.
+#ifndef UI_MAX_SCAN_RESULTS
+  #define UI_MAX_SCAN_RESULTS  12
+#endif
+#define UI_SCAN_KEY_LEN        32    // full public key, so a contact can be added
+
+// how long we keep collecting replies after firing a scan. Responders back off by
+// getRetransmitDelay()*4, which is well under a second for a control packet.
+#define UI_SCAN_WINDOW_MILLIS  5000
+
+#define UI_SCAN_INTERVAL_BUSY_MILLIS  (15UL * 60 * 1000)   // heard traffic
+#define UI_SCAN_INTERVAL_IDLE_MILLIS  ( 3UL * 60 * 1000)   // nothing found / nothing heard
+
+struct AdvertPath;   // defined in ../MyMesh.h
+
+// what NodeInfoScreen draws below the title
+#define NODEINFO_SIGNAL   1    // 16-hex key + IN/OUT signal meters
+#define NODEINFO_FULLKEY  2    // the whole public key, 16 hex chars per line
+
+struct ScanResult {
+  uint8_t  key[UI_SCAN_KEY_LEN];
+  uint8_t  key_len;
+  uint8_t  node_type;
+  int8_t   rx_snr4;       // SNR we heard the reply at, x4   (incoming)
+  int8_t   tx_snr4;       // SNR the node heard us at, x4    (outgoing)
+  unsigned long seen;     // millis() of the reply
+};
 
 class UITask : public AbstractUITask {
   DisplayDriver* _display;
@@ -50,10 +79,30 @@ class UITask : public AbstractUITask {
 
   UIScreen* splash;
   UIScreen* home;
-  UIScreen* msg_preview;
+  UIScreen* chan_view;
+  UIScreen* node_info;
+  UIScreen* path_view;
+  UIScreen* matches_view;
   UIScreen* curr;
+  uint8_t _info_origin;    // 0 = Scan page, 1 = Recent page, 2 = path view
+  MsgStore _msgs;
+  bool _was_pairing;
+
+  // --- node scan ---
+  ScanResult _scan[UI_MAX_SCAN_RESULTS];
+  int  _scan_count;
+  int  _scan_hits;              // replies to the scan currently in flight
+  unsigned long _scan_deadline; // 0 = no scan in flight
+  bool _autoscan;
+  unsigned long _next_autoscan;
+  uint32_t _pkts_at_last_scan;
+
+  // --- link activity, for the top-bar signal glyph ---
+  unsigned long _last_activity;   // millis of last received packet or scan reply
+  uint32_t _last_pkt_count;
 
   void userLedHandler();
+  void wakeForMsg();
 
   // Button action handlers
   char checkDisplayOn(char c);
@@ -69,10 +118,44 @@ public:
     next_batt_chck = _next_refresh = 0;
     ui_started_at = 0;
     curr = NULL;
+    _was_pairing = false;
+    _scan_count = _scan_hits = 0;
+    _scan_deadline = 0;
+    _autoscan = false;
+    _next_autoscan = 0;
+    _pkts_at_last_scan = 0;
+    _last_activity = 0;
+    _last_pkt_count = 0;
+    _info_origin = 0;
   }
   void begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* node_prefs);
 
   void gotoHomeScreen() { setCurrScreen(home); }
+
+  MsgStore& msgs() { return _msgs; }
+
+  // --- node scan ---
+  void startScan();
+  bool isScanning() const { return _scan_deadline != 0; }
+  bool isAutoscan() const { return _autoscan; }
+  void toggleAutoscan();
+  int  scanCount() const { return _scan_count; }
+  const ScanResult& scanResult(int i) const { return _scan[i]; }   // newest first
+
+  // 0 = nothing heard for 15 min (glyph hidden), 1..3 = how recent
+  int signalBars() const;
+
+  void openChannelView(const MsgRowKey& key, const char* title);
+  void closeChannelView();       // marks read, returns to Channels page keeping control
+  void gotoBluetoothScreen();    // used when a peer starts pairing
+
+  void openNodeInfo(const ScanResult& r);          // from the Scan page
+  void openAdvertInfo(const AdvertPath& a);       // from the Recent page
+  void openPathView(const AdvertPath& a);
+  void openMatches(const uint8_t* hash, uint8_t hash_len);
+  void closeNodeInfo();          // returns to whichever page opened it
+  void closePathView();          // back to Recent, keeping control
+  void closeMatches();           // back to the path view
   void showAlert(const char* text, int duration_millis);
   int  getMsgCount() const { return _msgcount; }
   bool hasDisplay() const { return _display != NULL; }
@@ -94,6 +177,10 @@ public:
   // from AbstractUITask
   void msgRead(int msgcount) override;
   void newMsg(uint8_t path_len, const char* from_name, const char* text, int msgcount) override;
+  void newChannelMsg(uint8_t channel_idx, const char* channel_name, uint8_t path_len,
+                     const char* text, int msgcount) override;
+  void nodeDiscovered(uint8_t node_type, int8_t rx_snr4, int8_t tx_snr4,
+                      const uint8_t* pub_key, uint8_t key_len) override;
   void notify(UIEventType t = UIEventType::none) override;
   void loop() override;
 

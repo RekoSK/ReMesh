@@ -65,6 +65,11 @@ class CustomSX1276 : public SX1276 {
       return true;  // success
     }
 
+    // Raw register read, for fault diagnosis. RegVersion (0x42) must read 0x12
+    // on a healthy SX127x; RegOpMode (0x01) bit 7 is 1 in LoRa mode, 0 in the
+    // FSK/OOK power-on default.
+    uint8_t readRadioReg(uint8_t addr) { return getMod()->SPIreadRegister(addr); }
+
     bool isReceiving() {
       return (getModemStatus() &
          (RH_RF95_MODEM_STATUS_SIGNAL_DETECTED

@@ -1,9 +1,20 @@
 #pragma once
 
 #include "LocationProvider.h"
+#include "GNSSSkyView.h"
 #include <MicroNMEA.h>
 #include <RTClib.h>
 #include <helpers/RefCountedDigitalPin.h>
+
+// MicroNMEA's unknown-sentence hook is a bare function pointer with no user
+// data, so its target has to be reachable statically. 'inline' gives one shared
+// instance across translation units. Only one GPS exists per board.
+inline GNSSSkyView*& _gnss_skyview_target() { static GNSSSkyView* p = NULL; return p; }
+
+inline void _gnss_unknown_sentence(MicroNMEA& nmea) {
+  GNSSSkyView* sv = _gnss_skyview_target();
+  if (sv) sv->process(nmea.getSentence(), millis());
+}
 
 #ifndef GPS_EN
     #ifdef PIN_GPS_EN
@@ -45,6 +56,7 @@ class MicroNMEALocationProvider : public LocationProvider {
     long next_check = 0;
     long time_valid = 0;
     unsigned long _last_time_sync = 0;
+    GNSSSkyView _sky;
     static const unsigned long TIME_SYNC_INTERVAL = 1800000; // Re-sync every 30 minutes
 
 public :
@@ -58,7 +70,12 @@ public :
             pinMode(_pin_en, OUTPUT);
             digitalWrite(_pin_en, LOW);
         }
+        // GSV / GSA reach us only through the unknown-sentence hook
+        _gnss_skyview_target() = &_sky;
+        nmea.setUnknownSentenceHandler(_gnss_unknown_sentence);
     }
+
+    GNSSSkyView* getSkyView() override { return &_sky; }
 
     void claim() {
         _claims++;
@@ -98,6 +115,7 @@ public :
         if (_pin_reset != -1) {
             digitalWrite(_pin_reset, GPS_RESET_FORCE);
         }
+        _sky.reset();   // powered down: the sky view is stale, not merely old
         release();
     }
 
@@ -145,6 +163,7 @@ public :
 
         if (millis() > next_check) {
             next_check = millis() + 1000;
+            _sky.expire(millis());   // drop satellites the receiver stopped reporting
             // Re-enable time sync periodically when GPS has valid fix
             if (!_time_sync_needed && _clock != NULL && (millis() - _last_time_sync) > TIME_SYNC_INTERVAL) {
                 _time_sync_needed = true;

@@ -158,6 +158,15 @@ public:
     return PMU->getBattVoltage();
   }
 
+  // AXP2101 (v1.2) and AXP192 (v1.1) both implement these; the PMU is probed at
+  // boot so the same firmware covers both.
+  bool isExternalPowered() override {
+    return PMU ? PMU->isVbusIn() : false;
+  }
+  bool isCharging() override {
+    return PMU ? PMU->isCharging() : false;
+  }
+
   const char* getManufacturerName() const{
     return "LilyGo T-Beam";
   }

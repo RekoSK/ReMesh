@@ -67,6 +67,9 @@ public:
 
   // Power management interface (boards with power management override these)
   virtual bool isExternalPowered() { return false; }
+  // true only while the battery is actually taking charge (not merely USB present,
+  // and not once the charger reports done). Boards without a PMU return false.
+  virtual bool isCharging() { return false; }
   virtual uint16_t getBootVoltage() { return 0; }
   virtual uint32_t getResetReason() const { return 0; }
   virtual const char* getResetReasonString(uint32_t reason) { return "Not available"; }

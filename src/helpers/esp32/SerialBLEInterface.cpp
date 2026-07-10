@@ -9,9 +9,13 @@
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
 #define ADVERT_RESTART_DELAY  1000   // millis
+#define RSSI_POLL_INTERVAL    2000   // millis
+
+SerialBLEInterface* SerialBLEInterface::_instance = NULL;
 
 void SerialBLEInterface::begin(const char* prefix, char* name, uint32_t pin_code) {
   _pin_code = pin_code;
+  _instance = this;
 
   if (strcmp(name, "@@MAC") == 0) {
     uint8_t addr[8];
@@ -27,6 +31,7 @@ void SerialBLEInterface::begin(const char* prefix, char* name, uint32_t pin_code
   BLEDevice::init(dev_name);
   BLEDevice::setSecurityCallbacks(this);
   BLEDevice::setMTU(MAX_FRAME_SIZE);
+  BLEDevice::setCustomGapHandler(gapHandler);   // for READ_RSSI_COMPLETE
 
   BLESecurity  sec;
   sec.setStaticPIN(pin_code);
@@ -55,13 +60,32 @@ void SerialBLEInterface::begin(const char* prefix, char* name, uint32_t pin_code
 
 // -------- BLESecurityCallbacks methods
 
+// setStaticPIN() gives us ESP_IO_CAP_OUT (DisplayOnly), so the stack raises
+// PASSKEY_NOTIF when a peer needs to be shown the PIN. A bonded peer
+// reconnecting re-uses its stored LTK and never gets here, which is exactly the
+// "a device is trying to pair" signal the UI wants.
+#define PAIRING_TIMEOUT_MILLIS  60000
+
+void SerialBLEInterface::markPairing() {
+  _pairing = true;
+  _pairing_expiry = millis() + PAIRING_TIMEOUT_MILLIS;
+}
+
+bool SerialBLEInterface::isPairing() const {
+  if (!_pairing) return false;
+  if (millis() > _pairing_expiry) return false;   // peer walked away
+  return true;
+}
+
 uint32_t SerialBLEInterface::onPassKeyRequest() {
   BLE_DEBUG_PRINTLN("onPassKeyRequest()");
+  markPairing();
   return _pin_code;
 }
 
 void SerialBLEInterface::onPassKeyNotify(uint32_t pass_key) {
   BLE_DEBUG_PRINTLN("onPassKeyNotify(%u)", pass_key);
+  markPairing();
 }
 
 bool SerialBLEInterface::onConfirmPIN(uint32_t pass_key) {
@@ -75,6 +99,7 @@ bool SerialBLEInterface::onSecurityRequest() {
 }
 
 void SerialBLEInterface::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
+  _pairing = false;   // pairing finished, one way or the other
   if (cmpl.success) {
     BLE_DEBUG_PRINTLN(" - SecurityCallback - Authentication Success");
     deviceConnected = true;
@@ -95,6 +120,11 @@ void SerialBLEInterface::onConnect(BLEServer* pServer) {
 void SerialBLEInterface::onConnect(BLEServer* pServer, esp_ble_gatts_cb_param_t *param) {
   BLE_DEBUG_PRINTLN("onConnect(), conn_id=%d, mtu=%d", param->connect.conn_id, pServer->getPeerMTU(param->connect.conn_id));
   last_conn_id = param->connect.conn_id;
+
+  memcpy(_peer_addr, param->connect.remote_bda, sizeof(_peer_addr));
+  _have_peer = true;
+  _rssi = 0;              // no reading for this peer yet
+  _next_rssi_req = 0;     // ask as soon as the main loop comes round
 }
 
 void SerialBLEInterface::onMtuChanged(BLEServer* pServer, esp_ble_gatts_cb_param_t* param) {
@@ -103,6 +133,9 @@ void SerialBLEInterface::onMtuChanged(BLEServer* pServer, esp_ble_gatts_cb_param
 
 void SerialBLEInterface::onDisconnect(BLEServer* pServer) {
   BLE_DEBUG_PRINTLN("onDisconnect()");
+  _pairing = false;   // peer gone; stop showing the PIN
+  _have_peer = false;
+  _rssi = 0;
   if (_isEnabled) {
     adv_restart_time = millis() + ADVERT_RESTART_DELAY;
 
@@ -157,6 +190,8 @@ void SerialBLEInterface::disable() {
   pService->stop();
   oldDeviceConnected = deviceConnected = false;
   adv_restart_time = 0;
+  _have_peer = false;
+  _rssi = 0;
 }
 
 size_t SerialBLEInterface::writeFrame(const uint8_t src[], size_t len) {
@@ -187,6 +222,8 @@ bool SerialBLEInterface::isWriteBusy() const {
 }
 
 size_t SerialBLEInterface::checkRecvFrame(uint8_t dest[]) {
+  pollRssi();   // this is the transport's per-loop tick; rate-limited internally
+
   if (send_queue_len > 0   // first, check send queue
     && millis() >= _last_write + BLE_WRITE_MIN_INTERVAL    // space the writes apart
   ) {
@@ -250,4 +287,32 @@ size_t SerialBLEInterface::checkRecvFrame(uint8_t dest[]) {
 
 bool SerialBLEInterface::isConnected() const {
   return deviceConnected;  //pServer != NULL && pServer->getConnectedCount() > 0;
+}
+
+// -------- link RSSI
+
+// Runs on the BLE stack task, for every GAP event the Arduino layer doesn't
+// consume. Only READ_RSSI_COMPLETE is ours.
+void SerialBLEInterface::gapHandler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
+  if (event != ESP_GAP_BLE_READ_RSSI_COMPLETE_EVT || _instance == NULL) return;
+
+  if (param->read_rssi_cmpl.status != ESP_BT_STATUS_SUCCESS
+   || param->read_rssi_cmpl.rssi == 127) {   // 127 == "could not be read"
+    _instance->_rssi = 0;
+    return;
+  }
+  _instance->_rssi = param->read_rssi_cmpl.rssi;
+}
+
+void SerialBLEInterface::pollRssi() {
+  if (!deviceConnected || !_have_peer) return;
+  if (millis() < _next_rssi_req) return;
+
+  _next_rssi_req = millis() + RSSI_POLL_INTERVAL;
+  esp_ble_gap_read_rssi(_peer_addr);   // reply arrives in gapHandler()
+}
+
+int SerialBLEInterface::getConnectionRssi() const {
+  if (!deviceConnected) return 0;
+  return _rssi;
 }

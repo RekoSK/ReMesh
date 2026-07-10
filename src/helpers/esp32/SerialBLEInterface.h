@@ -5,6 +5,7 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <esp_gap_ble_api.h>
 
 class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLEServerCallbacks, BLECharacteristicCallbacks {
   BLEServer *pServer;
@@ -18,6 +19,22 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   unsigned long _last_write;
   unsigned long adv_restart_time;
 
+  // set from the BLE stack task, read from the main loop
+  volatile bool _pairing;
+  volatile unsigned long _pairing_expiry;
+
+  // Link RSSI. esp_ble_gap_read_rssi() is asynchronous: the reply lands in
+  // gapHandler() on the BLE stack task, so _rssi is written there and read from
+  // the main loop. 0 = no reading yet.
+  esp_bd_addr_t _peer_addr;
+  bool _have_peer;
+  volatile int8_t _rssi;
+  unsigned long _next_rssi_req;
+
+  static SerialBLEInterface* _instance;   // gapHandler() is a plain C callback
+  static void gapHandler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param);
+  void pollRssi();
+
   struct Frame {
     uint8_t len;
     uint8_t buf[MAX_FRAME_SIZE];
@@ -30,6 +47,7 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   Frame send_queue[FRAME_QUEUE_SIZE];
 
   void clearBuffers() { recv_queue_len = 0; send_queue_len = 0; }
+  void markPairing();
 
 protected:
   // BLESecurityCallbacks methods
@@ -55,10 +73,16 @@ public:
     deviceConnected = false;
     oldDeviceConnected = false;
     adv_restart_time = 0;
+    _pairing = false;
+    _pairing_expiry = 0;
     _isEnabled = false;
     _last_write = 0;
     last_conn_id = 0;
     send_queue_len = recv_queue_len = 0;
+    memset(_peer_addr, 0, sizeof(_peer_addr));
+    _have_peer = false;
+    _rssi = 0;
+    _next_rssi_req = 0;
   }
 
   /**
@@ -75,6 +99,8 @@ public:
   bool isEnabled() const override { return _isEnabled; }
 
   bool isConnected() const override;
+  bool isPairing() const override;
+  int getConnectionRssi() const override;
 
   bool isWriteBusy() const override;
   size_t writeFrame(const uint8_t src[], size_t len) override;

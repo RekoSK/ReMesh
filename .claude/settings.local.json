@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(timeout 590 pio run -e ESP32C6_SX1276_SH1106_companion_radio_ble)",
+      "Bash(awk '/^class MsgPreviewScreen/{s=NR} s&&/^};/{print s\"-\"NR; exit}' examples/companion_radio/ui-new/UITask.cpp)",
+      "Bash(timeout 300 pio run -e ESP32C6_SX1276_SH1106_companion_radio_ble)",
+      "Bash(./build2.sh list *)",
+      "Bash(timeout 590 pio run -e Tbeam_SX1276_companion_radio_ble)",
+      "Bash(timeout 590 pio run -e LilyGo_T-Echo_Card_companion_radio_ble)",
+      "Bash(timeout 590 pio run -e RAK_3112_companion_radio_ble)",
+      "Bash(sed -i 's/total += 1 + wrap\\(m->text, lines, 6, cols\\) + 1;/total += 1 + msgWrapLines\\(m->text, lines, 6, cols\\) + 1;/' examples/companion_radio/ui-new/UITask.cpp)",
+      "Bash(sed -i 's/int nbody = wrap\\(m->text, lines, 6, cols\\);/int nbody = msgWrapLines\\(m->text, lines, 6, cols\\);/' examples/companion_radio/ui-new/UITask.cpp)",
+      "Bash(timeout 590 ./build2.sh build-matching-firmwares ESP32C6_SX1276)",
+      "Bash(timeout 200 pio run -e ESP32C6_SX1276_SH1106_companion_radio_ble)",
+      "Bash(timeout 400 pio run -e ESP32C6_SX1276_SH1106_companion_radio_ble)",
+      "Bash(grep -nE 'setUnknownSentenceHandler|getSentence|_unknownSentenceHandler' __TRACKED_VAR__/MicroNMEA.h)",
+      "Bash(grep -n 'getCourse\\\\|getSpeed' -A4 __TRACKED_VAR__/MicroNMEA.h)",
+      "Bash(timeout 300 pio run -e Tbeam_SX1276_companion_radio_ble)",
+      "Bash(timeout 590 pio run -e Tbeam_SX1276_ble_debug)",
+      "Bash(timeout 400 pio run -e Tbeam_SX1276_ble_debug -t upload --upload-port /dev/ttyACM0)",
+      "Bash(awk '/uint32_t Mesh::getRetransmitDelay/,/^}/' src/Mesh.cpp)",
+      "Bash(awk 'NR<=196 && /^ *\\(public|protected|private\\):/{s=$0; n=NR} END{}' src/Mesh.h)",
+      "Bash(awk 'NR<=196 && /^ *\\(public|protected|private\\):/{s=$0;n=NR} END{print \"  createControlData is under: \" s \" \\(line \" n \"\\)\"}' src/Mesh.h)",
+      "Bash(awk 'NR<=217 && /^ *\\(public|protected|private\\):/{s=$0;n=NR} END{print \"  sendZeroHop under: \" s \" \\(line \" n \"\\)\"}' src/Mesh.h)",
+      "Bash(awk '/bool BaseChatMesh::addContact/,/^}/' src/helpers/BaseChatMesh.cpp)",
+      "Bash(awk '/uint8_t Packet::getPathHashCount|uint8_t Packet::copyPath|bool Packet::isValidPathLen/,/^}/' src/Packet.cpp)",
+      "Bash(python3 -c ' *)",
+      "Bash(awk *)",
+      "Bash(~/.platformio/penv/bin/pio run *)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(export JAVA_HOME=/home/reko/.local/share/JetBrains/Toolbox/apps/android-studio/jbr)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(python3 -c \"import qrcode; print\\('qrcode ok'\\)\")"
+    ]
+  }
+}
