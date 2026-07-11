@@ -93,6 +93,7 @@ import com.rekosk.remesh.ble.MeshCoreProtocol.RadioLimits
 import com.rekosk.remesh.ble.MeshFrame
 import com.rekosk.remesh.data.model.NodeSettings
 import com.rekosk.remesh.ui.MeshViewModel
+import com.rekosk.remesh.ui.components.avatarGlyph
 import com.rekosk.remesh.ui.screens.settings.BackGuard
 import com.rekosk.remesh.ui.screens.settings.DiscardChangesDialog
 import kotlinx.coroutines.launch
@@ -361,7 +362,7 @@ private fun IdentityHeader(selfInfo: MeshFrame.SelfInfo?) {
                 )
             } else {
                 Text(
-                    text = nodeName.take(1).uppercase(),
+                    text = avatarGlyph(nodeName),
                     style = MaterialTheme.typography.headlineLarge,
                     color = MaterialTheme.colorScheme.onPrimaryContainer,
                 )
