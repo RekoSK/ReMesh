@@ -2,4 +2,7 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- Transparent launcher background so the orange logo shows on a clear
+         background when themed (Material You) icons are disabled. -->
+    <color name="ic_launcher_background">#00000000</color>
 </resources>
