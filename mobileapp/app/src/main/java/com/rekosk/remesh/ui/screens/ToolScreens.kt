@@ -514,7 +514,11 @@ internal fun payloadTypeName(type: Int?): String = when (type) {
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DiscoverNearbyScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
+fun DiscoverNearbyScreen(
+    viewModel: MeshViewModel,
+    onBack: () -> Unit,
+    onOpenNode: (NearbyNode) -> Unit,
+) {
     val nodes by viewModel.nearbyNodes.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
@@ -579,7 +583,9 @@ fun DiscoverNearbyScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                 }
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(nodes, key = { it.publicKey.contentHashCode() }) { NearbyRow(it) }
+                    items(nodes, key = { it.publicKey.contentHashCode() }) {
+                        NearbyRow(it, onClick = { onOpenNode(it) })
+                    }
                 }
             }
         }
@@ -587,10 +593,11 @@ fun DiscoverNearbyScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun NearbyRow(node: NearbyNode) {
+private fun NearbyRow(node: NearbyNode, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

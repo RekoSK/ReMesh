@@ -25,15 +25,12 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Info
@@ -45,9 +42,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.PhonelinkErase
 import androidx.compose.material.icons.filled.QrCode
-import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.SdStorage
 import androidx.compose.material.icons.filled.VpnKey
@@ -626,11 +621,6 @@ private fun OtherToolsSection(nav: SettingsNav) {
     NavRow(Icons.Filled.FileUpload, "Import configuration", onClick = nav.onImportConfig)
     NavRow(Icons.Filled.Save, "Export configuration", onClick = nav.onExportConfig)
     NavRow(Icons.Filled.Download, "Export app database")
-    NavRow(Icons.Filled.Delete, "Clear data")
-    NavRow(Icons.Filled.BugReport, "Bug report")
-    NavRow(Icons.AutoMirrored.Filled.List, "Debug logs")
-    NavRow(Icons.Filled.PhonelinkErase, "Factory reset")
-    NavRow(Icons.Filled.RestartAlt, "Restart")
 }
 
 // ---------------- device information ----------------

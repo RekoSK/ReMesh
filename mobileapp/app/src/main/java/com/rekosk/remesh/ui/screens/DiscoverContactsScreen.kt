@@ -1,5 +1,6 @@
 package com.rekosk.remesh.ui.screens
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,7 +50,11 @@ import com.rekosk.remesh.ui.components.formatMessageTime
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-fun DiscoverContactsScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
+fun DiscoverContactsScreen(
+    viewModel: MeshViewModel,
+    onBack: () -> Unit,
+    onOpenNode: (RecentAdvert) -> Unit,
+) {
     val adverts by viewModel.recentAdverts.collectAsStateWithLifecycle()
     val isLoading by viewModel.isDiscovering.collectAsStateWithLifecycle()
     val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
@@ -137,7 +142,9 @@ fun DiscoverContactsScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                         }
                     }
                 } else {
-                    items(adverts, key = { it.publicKey.contentHashCode() }) { AdvertRow(it) }
+                    items(adverts, key = { it.publicKey.contentHashCode() }) {
+                        AdvertRow(it, onClick = { onOpenNode(it) })
+                    }
                 }
             }
         }
@@ -145,10 +152,11 @@ fun DiscoverContactsScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-private fun AdvertRow(advert: RecentAdvert) {
+private fun AdvertRow(advert: RecentAdvert, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
@@ -81,6 +82,9 @@ fun ContactDetailScreen(
     onBack: () -> Unit,
     onEditRoute: () -> Unit,
     onSendMessage: () -> Unit,
+    unknownName: String? = null,
+    unknownPublicKeyHex: String? = null,
+    unknownAdvType: Int = 0,
 ) {
     val contact by viewModel.contactFlow(contactId).collectAsStateWithLifecycle()
     val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
@@ -98,9 +102,31 @@ fun ContactDetailScreen(
     var showRename by remember { mutableStateOf(false) }
     var showPing by remember { mutableStateOf(false) }
     var showDelete by remember { mutableStateOf(false) }
+    var showAdd by remember { mutableStateOf(false) }
 
     fun toast(message: String?) {
         message?.let { scope.launch { snackbar.showSnackbar(it) } }
+    }
+
+    // Identity of a discovered node that is not (yet) a contact, passed through the nav
+    // args. Present only when this screen was opened from a Discover list for a node the
+    // node's own contact table does not hold.
+    val unknownNodeType = when (unknownAdvType) {
+        2 -> NodeType.REPEATER
+        3 -> NodeType.ROOM
+        4 -> NodeType.SENSOR
+        else -> NodeType.CHAT
+    }
+    val unknownHex4 = unknownPublicKeyHex?.take(4)?.uppercase().orEmpty()
+    val unknownAddType = if (unknownAdvType in 1..4) unknownAdvType else 1
+    val discovered = remember(unknownPublicKeyHex) {
+        unknownPublicKeyHex?.let { viewModel.discoveredNode(it) }
+    }
+    val unknownDisplayName = (discovered?.name ?: unknownName)?.ifBlank { null }
+
+    fun addUnknownContact(name: String) {
+        val hex = unknownPublicKeyHex ?: return
+        viewModel.addContact(name, unknownAddType, hex) { error -> toast(error ?: "Added $name") }
     }
 
     val current = contact
@@ -119,11 +145,84 @@ fun ContactDetailScreen(
         },
     ) { padding ->
         if (current == null) {
+            if (unknownPublicKeyHex == null) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(padding).padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("Contact not found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                return@Scaffold
+            }
+            // Unknown node opened from Discover: identity + whatever the advert/scan already
+            // told us, and an "Add to contacts" action in place of the Delete row. Once added,
+            // contactFlow emits the real contact and the full menu below takes over.
             Column(
-                modifier = Modifier.fillMaxWidth().padding(padding).padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(padding)
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 24.dp),
             ) {
-                Text("Contact not found", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                UnknownNodeHeader(unknownNodeType, unknownDisplayName, unknownPublicKeyHex)
+
+                MenuCard {
+                    InfoRow("Public key", unknownPublicKeyHex, monospace = true, trailing = {
+                        IconButton(onClick = {
+                            clipboard.setText(AnnotatedString(unknownPublicKeyHex))
+                            toast("Public key copied")
+                        }) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
+                    })
+                    MenuRowDivider()
+                    InfoRow("Contact type", unknownNodeType.label())
+                }
+
+                if (discovered != null &&
+                    (discovered.hops != null || discovered.inboundSnr != null ||
+                        discovered.lastHeardEpochMs != null)
+                ) {
+                    SectionHeader("Signal")
+                    MenuCard {
+                        var needDivider = false
+                        discovered.hops?.let {
+                            InfoRow(
+                                "Hop count",
+                                if (discovered.isDirect == true) "Direct"
+                                else "$it ${if (it == 1) "hop" else "hops"}",
+                            )
+                            needDivider = true
+                        }
+                        discovered.inboundSnr?.let { inb ->
+                            if (needDivider) MenuRowDivider()
+                            InfoRow(
+                                "Signal (in / out)",
+                                "%.1f / %.1f dB".format(inb, discovered.outboundSnr ?: 0f),
+                            )
+                            needDivider = true
+                        }
+                        discovered.lastHeardEpochMs?.let {
+                            if (needDivider) MenuRowDivider()
+                            InfoRow("Last heard", formatLastSeen(it))
+                        }
+                    }
+                }
+
+                SectionHeader("Other tools")
+                MenuCard {
+                    ToolRow(
+                        Icons.Filled.PersonAdd,
+                        "Add to contacts",
+                        enabled = isConnected,
+                        onClick = {
+                            if (unknownNodeType == NodeType.CHAT) {
+                                addUnknownContact(unknownDisplayName ?: "Node $unknownHex4")
+                            } else {
+                                showAdd = true
+                            }
+                        },
+                    )
+                }
+                Spacer(Modifier.size(16.dp))
             }
             return@Scaffold
         }
@@ -273,6 +372,48 @@ fun ContactDetailScreen(
             dismissButton = { TextButton(onClick = { showDelete = false }) { Text("Cancel") } },
         )
     }
+
+    if (showAdd) {
+        TextEntryDialog(
+            title = "Add to contacts",
+            initial = "",
+            label = "Custom name (optional)",
+            confirmLabel = "Add",
+            onDismiss = { showAdd = false },
+            onConfirm = { entered ->
+                showAdd = false
+                val fallback = when (unknownNodeType) {
+                    NodeType.ROOM -> "Room "
+                    NodeType.SENSOR -> "Sensor "
+                    else -> "Repeater "
+                } + unknownHex4
+                addUnknownContact(entered.ifBlank { fallback })
+            },
+        )
+    }
+}
+
+@Composable
+private fun UnknownNodeHeader(type: NodeType, name: String?, publicKeyHex: String) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        NodeAvatar(
+            type = type,
+            isBlocked = false,
+            size = 96,
+            name = name,
+            colorSeed = publicKeyHex,
+        )
+        Spacer(Modifier.size(12.dp))
+        Text(name ?: "Unknown node", style = MaterialTheme.typography.headlineSmall)
+        Text(
+            text = "<${publicKeyHex.take(8)}...${publicKeyHex.takeLast(8)}>",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable
@@ -389,6 +530,7 @@ private fun TextEntryDialog(
     label: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
+    confirmLabel: String = "Save",
 ) {
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
@@ -402,7 +544,7 @@ private fun TextEntryDialog(
                 singleLine = true,
             )
         },
-        confirmButton = { TextButton(onClick = { onConfirm(text.trim()) }) { Text("Save") } },
+        confirmButton = { TextButton(onClick = { onConfirm(text.trim()) }) { Text(confirmLabel) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

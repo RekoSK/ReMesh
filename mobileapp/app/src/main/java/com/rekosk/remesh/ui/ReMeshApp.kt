@@ -1,5 +1,6 @@
 package com.rekosk.remesh.ui
 
+import android.net.Uri
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -111,6 +114,24 @@ private const val ROUTE_MAP_TRACE_RESULT = "tools/map_trace_result"
 private const val ROUTE_PACKET_LOG = "tools/packet_log"
 private const val ROUTE_DISCOVER_NEARBY = "tools/discover_nearby"
 private const val ROUTE_NOISE_FLOOR = "tools/noise_floor"
+
+/**
+ * Route to a node's contact menu from a Discover list. Carries the derived contact id
+ * (so a known node shows its full menu) plus the raw identity as query args, so an
+ * unknown node can still render + be added. Mirrors MeshRepository's id scheme:
+ * "c:" + first 6 bytes of the key, and AdvType ints CHAT=1/REPEATER=2/ROOM=3/SENSOR=4.
+ */
+private fun nodeDetailRoute(publicKey: ByteArray, type: NodeType, name: String): String {
+    fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
+    val id = "c:" + publicKey.copyOfRange(0, 6).hex()
+    val advType = when (type) {
+        NodeType.REPEATER -> 2
+        NodeType.ROOM -> 3
+        NodeType.SENSOR -> 4
+        else -> 1
+    }
+    return "$ROUTE_CONTACT_DETAIL/$id?pk=${publicKey.hex()}&advType=$advType&nm=${Uri.encode(name)}"
+}
 
 private enum class TopLevel(
     val route: String,
@@ -284,7 +305,14 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onOpenContact = { navController.navigate("$ROUTE_CONTACT_DETAIL/$conversationId") },
                 )
             }
-            composable("$ROUTE_CONTACT_DETAIL/{contactId}") { entry ->
+            composable(
+                "$ROUTE_CONTACT_DETAIL/{contactId}?pk={pk}&advType={advType}&nm={nm}",
+                arguments = listOf(
+                    navArgument("pk") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("advType") { type = NavType.IntType; defaultValue = 0 },
+                    navArgument("nm") { type = NavType.StringType; nullable = true; defaultValue = null },
+                ),
+            ) { entry ->
                 val id = entry.arguments?.getString("contactId").orEmpty()
                 ContactDetailScreen(
                     viewModel = viewModel,
@@ -292,6 +320,9 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onBack = { navController.popBackStack() },
                     onEditRoute = { navController.navigate("$ROUTE_SET_ROUTE/$id") },
                     onSendMessage = { navController.navigate("$ROUTE_CHAT/$id") },
+                    unknownName = entry.arguments?.getString("nm"),
+                    unknownPublicKeyHex = entry.arguments?.getString("pk"),
+                    unknownAdvType = entry.arguments?.getInt("advType") ?: 0,
                 )
             }
             composable("$ROUTE_SET_ROUTE/{contactId}") { entry ->
@@ -379,7 +410,15 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onDone = { navController.popBackStack(ROUTE_CONTACTS, inclusive = false) },
                 )
             }
-            composable(ROUTE_DISCOVER_CONTACTS) { DiscoverContactsScreen(viewModel, back) }
+            composable(ROUTE_DISCOVER_CONTACTS) {
+                DiscoverContactsScreen(
+                    viewModel = viewModel,
+                    onBack = back,
+                    onOpenNode = { advert ->
+                        navController.navigate(nodeDetailRoute(advert.publicKey, advert.type, advert.name))
+                    },
+                )
+            }
             composable(ROUTE_TOOLS) {
                 ToolsScreen(
                     onBack = back,
@@ -412,7 +451,15 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                 )
             }
             composable(ROUTE_PACKET_LOG) { PacketLogScreen(viewModel, back) }
-            composable(ROUTE_DISCOVER_NEARBY) { DiscoverNearbyScreen(viewModel, back) }
+            composable(ROUTE_DISCOVER_NEARBY) {
+                DiscoverNearbyScreen(
+                    viewModel = viewModel,
+                    onBack = back,
+                    onOpenNode = { node ->
+                        navController.navigate(nodeDetailRoute(node.publicKey, node.type, node.name ?: ""))
+                    },
+                )
+            }
             composable(ROUTE_NOISE_FLOOR) { NoiseFloorScreen(viewModel, back) }
             composable("$ROUTE_SHARE_CHANNEL/{channelIndex}") { entry ->
                 ShareChannelScreen(

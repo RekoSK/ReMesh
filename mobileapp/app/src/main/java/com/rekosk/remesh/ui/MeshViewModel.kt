@@ -29,6 +29,7 @@ import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.Contact
 import com.rekosk.remesh.data.model.ContactExtras
 import com.rekosk.remesh.data.model.ConversationSummary
+import com.rekosk.remesh.data.model.DiscoveredNodeInfo
 import com.rekosk.remesh.data.model.LoggedPacket
 import com.rekosk.remesh.data.model.MeshMessage
 import com.rekosk.remesh.data.model.NearbyNode
@@ -558,6 +559,20 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Deletes several contacts in one pass; reports the first error, if any. */
+    fun removeContacts(ids: Set<String>, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            var firstError: String? = null
+            for (id in ids) {
+                val error = repository.removeContact(id)
+                if (error != null && firstError == null) firstError = error
+            }
+            _isBusy.value = false
+            onResult(firstError)
+        }
+    }
+
     /** `meshcore://contact/add?...` for a contact we hold, or null if unknown. */
     fun contactShareUri(contactId: String): String? {
         val raw = repository.rawContactById(contactId) ?: return null
@@ -617,6 +632,28 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _nearbyNodes = MutableStateFlow<List<NearbyNode>>(emptyList())
     val nearbyNodes: StateFlow<List<NearbyNode>> = _nearbyNodes.asStateFlow()
+
+    /**
+     * Live facts about a discovered (not-yet-contact) node, so its contact menu can show
+     * hop count / signal before it is added. Merges a recent advert and a nearby-scan reply
+     * for the same key; null when neither is currently known.
+     */
+    fun discoveredNode(publicKeyHex: String): DiscoveredNodeInfo? {
+        val key = runCatching { with(ChannelCrypto) { publicKeyHex.decodeHex() } }.getOrNull() ?: return null
+        val advert = recentAdverts.value.firstOrNull { it.publicKey.contentEquals(key) }
+        val nearby = nearbyNodes.value.firstOrNull { it.publicKey.contentEquals(key) }
+        if (advert == null && nearby == null) return null
+        return DiscoveredNodeInfo(
+            name = advert?.name ?: nearby?.name,
+            type = advert?.type ?: nearby?.type ?: NodeType.CHAT,
+            hops = advert?.hops,
+            isDirect = advert?.isDirect,
+            inboundSnr = nearby?.inboundSnr,
+            outboundSnr = nearby?.outboundSnr,
+            rssi = nearby?.rssi,
+            lastHeardEpochMs = advert?.receivedEpochMs,
+        )
+    }
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()

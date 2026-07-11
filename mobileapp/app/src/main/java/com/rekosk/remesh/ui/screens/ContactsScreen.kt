@@ -1,9 +1,12 @@
 package com.rekosk.remesh.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,24 +25,32 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,30 +81,53 @@ fun ContactsScreen(
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val pullState = rememberPullToRefreshState()
 
+    // Long-press multi-select: while any row is selected the top bar becomes a
+    // contextual "Selected: N" bar with a batch-delete action.
+    var selected by remember { mutableStateOf(emptySet<String>()) }
+    val selectionMode = selected.isNotEmpty()
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    BackHandler(enabled = selectionMode) { selected = emptySet() }
+
     Scaffold(
         modifier = modifier,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             Column {
-                TopAppBar(
-                    title = {
-                        Column {
-                            Text("Contacts", style = MaterialTheme.typography.headlineSmall)
-                            Text(
-                                text = "$total contacts",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (selectionMode) {
+                    TopAppBar(
+                        navigationIcon = {
+                            IconButton(onClick = { selected = emptySet() }) {
+                                Icon(Icons.Filled.Close, contentDescription = "Clear selection")
+                            }
+                        },
+                        title = { Text("Selected: ${selected.size}") },
+                        actions = {
+                            IconButton(onClick = { showDeleteConfirm = true }) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete selected")
+                            }
+                        },
+                    )
+                } else {
+                    TopAppBar(
+                        title = {
+                            Column {
+                                Text("Contacts", style = MaterialTheme.typography.headlineSmall)
+                                Text(
+                                    text = "$total contacts",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        actions = {
+                            MeshTopBarActions(
+                                onAdvert = viewModel::sendAdvert,
+                                selfContactUri = viewModel::selfContactUri,
+                                overflow = overflow,
                             )
-                        }
-                    },
-                    actions = {
-                        MeshTopBarActions(
-                            onAdvert = viewModel::sendAdvert,
-                            selfContactUri = viewModel::selfContactUri,
-                            overflow = overflow,
-                        )
-                    },
-                )
+                        },
+                    )
+                }
                 // The "snake" bar covers syncs the pull gesture didn't start:
                 // the post-connect handshake, and drains triggered by MSG_WAITING.
                 AnimatedVisibility(
@@ -115,17 +149,19 @@ fun ContactsScreen(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = viewModel::onQueryChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search contacts...") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                singleLine = true,
-                shape = RoundedCornerShape(28.dp),
-            )
+            if (!selectionMode) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = viewModel::onQueryChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    placeholder = { Text("Search contacts...") },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(28.dp),
+                )
+            }
 
             PullToRefreshBox(
                 isRefreshing = isSyncing,
@@ -161,7 +197,22 @@ fun ContactsScreen(
                         }
                     } else {
                         items(contacts, key = { it.id }) { contact ->
-                            ContactRow(contact = contact, onClick = { onContactClick(contact) })
+                            ContactRow(
+                                contact = contact,
+                                selected = contact.id in selected,
+                                onClick = {
+                                    if (selectionMode) {
+                                        selected = if (contact.id in selected) {
+                                            selected - contact.id
+                                        } else {
+                                            selected + contact.id
+                                        }
+                                    } else {
+                                        onContactClick(contact)
+                                    }
+                                },
+                                onLongClick = { selected = selected + contact.id },
+                            )
                             HorizontalDivider(
                                 color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
                             )
@@ -171,14 +222,43 @@ fun ContactsScreen(
             }
         }
     }
+
+    if (showDeleteConfirm) {
+        val count = selected.size
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete $count ${if (count == 1) "contact" else "contacts"}?") },
+            text = { Text("This removes them from your node. Their messages are forgotten too.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteConfirm = false
+                    viewModel.removeContacts(selected) {}
+                    selected = emptySet()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ContactRow(contact: Contact, onClick: () -> Unit) {
+private fun ContactRow(
+    contact: Contact,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .background(
+                if (selected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                else Color.Transparent,
+            )
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

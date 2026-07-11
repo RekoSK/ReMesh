@@ -59,6 +59,24 @@ data class NearbyNode(
     override fun hashCode(): Int = publicKey.contentHashCode()
 }
 
+/**
+ * Read-only facts about a node seen in the Discover screens, before it is a contact.
+ * Aggregates whatever a recent advert and/or a nearby scan reply told us about the key,
+ * so its contact menu can show real signal/route info without adding it first.
+ */
+data class DiscoveredNodeInfo(
+    val name: String?,
+    val type: NodeType,
+    /** Hop count from a recent advert; null when only a nearby scan reply is known. */
+    val hops: Int?,
+    val isDirect: Boolean?,
+    /** Nearby-scan link quality (how well we heard them / they heard us). */
+    val inboundSnr: Float?,
+    val outboundSnr: Float?,
+    val rssi: Int?,
+    val lastHeardEpochMs: Long?,
+)
+
 /** One hop of a completed path trace. */
 data class TraceHop(
     val hashHex: String,
