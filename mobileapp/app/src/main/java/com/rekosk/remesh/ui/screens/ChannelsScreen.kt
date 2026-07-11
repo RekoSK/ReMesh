@@ -21,15 +21,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material3.Card
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -38,7 +39,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -59,13 +59,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.ChannelKind
+import com.rekosk.remesh.data.model.ConversationSummary
+import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.MeshViewModel
 import com.rekosk.remesh.ui.components.MeshTopBarActions
+import com.rekosk.remesh.ui.components.NodeAvatar
 import com.rekosk.remesh.ui.components.OverflowNav
+import com.rekosk.remesh.ui.components.color
+import com.rekosk.remesh.ui.components.icon
 import com.rekosk.remesh.ui.theme.NodeColors
 import kotlinx.coroutines.launch
 
@@ -73,16 +79,15 @@ import kotlinx.coroutines.launch
 @Composable
 fun ChannelsScreen(
     viewModel: MeshViewModel,
-    onChannelClick: (Channel) -> Unit,
-    onOpenConnect: () -> Unit,
+    onOpenConversation: (String) -> Unit,
     onAddChannel: () -> Unit,
-    onShareChannel: (Channel) -> Unit,
+    onShareChannel: (Int) -> Unit,
     overflow: OverflowNav,
     modifier: Modifier = Modifier,
 ) {
+    val conversations by viewModel.conversations.collectAsStateWithLifecycle()
     val channels by viewModel.channels.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
-    val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
     val pullState = rememberPullToRefreshState()
 
     var pendingDelete by remember { mutableStateOf<Channel?>(null) }
@@ -112,8 +117,6 @@ fun ChannelsScreen(
                     title = { Text("Channels") },
                     actions = {
                         MeshTopBarActions(
-                            isConnected = isConnected,
-                            onOpenConnect = onOpenConnect,
                             onAdvert = viewModel::sendAdvert,
                             selfContactUri = viewModel::selfContactUri,
                             overflow = overflow,
@@ -159,7 +162,7 @@ fun ChannelsScreen(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
             ) {
-                if (channels.isEmpty()) {
+                if (conversations.isEmpty()) {
                     item {
                         Box(
                             modifier = Modifier.fillParentMaxSize(),
@@ -173,12 +176,17 @@ fun ChannelsScreen(
                         }
                     }
                 } else {
-                    items(channels, key = { it.id }) { channel ->
-                        ChannelCard(
-                            channel = channel,
-                            onClick = { onChannelClick(channel) },
-                            onShare = { onShareChannel(channel) },
-                            onDelete = { pendingDelete = channel },
+                    items(conversations, key = { it.id }) { conversation ->
+                        ConversationCard(
+                            conversation = conversation,
+                            onClick = { onOpenConversation(conversation.id) },
+                            onShare = {
+                                channels.firstOrNull { it.id == conversation.id }
+                                    ?.let { onShareChannel(it.index) }
+                            },
+                            onDelete = {
+                                pendingDelete = channels.firstOrNull { it.id == conversation.id }
+                            },
                         )
                         Spacer(Modifier.size(8.dp))
                     }
@@ -189,13 +197,13 @@ fun ChannelsScreen(
 }
 
 /**
- * A long press opens the row's actions, anchored to the row the way the reference
- * app anchors them to its overflow button.
+ * A channel or a direct-message thread. Long-pressing a channel opens its actions;
+ * a DM has none. The right edge shows the unread count, or nothing when caught up.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChannelCard(
-    channel: Channel,
+private fun ConversationCard(
+    conversation: ConversationSummary,
     onClick: () -> Unit,
     onShare: () -> Unit,
     onDelete: () -> Unit,
@@ -203,65 +211,92 @@ private fun ChannelCard(
     var menuOpen by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxWidth()) {
-        // The menu is a sibling of the card inside this Box, so it anchors to the row.
-        ChannelActionsMenu(
-            expanded = menuOpen,
-            onDismiss = { menuOpen = false },
-            onShare = {
-                menuOpen = false
-                onShare()
-            },
-            onDelete = {
-                menuOpen = false
-                onDelete()
-            },
-        )
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = { menuOpen = true }),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-        ),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(channel.kind.tint().copy(alpha = 0.22f)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = channel.kind.icon(),
-                    contentDescription = channel.kind.label(),
-                    tint = channel.kind.tint(),
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(channel.name, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = channel.kind.label(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Icon(
-                imageVector = Icons.Filled.DragHandle,
-                contentDescription = "Reorder",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        if (conversation.isChannel) {
+            ChannelActionsMenu(
+                expanded = menuOpen,
+                onDismiss = { menuOpen = false },
+                onShare = {
+                    menuOpen = false
+                    onShare()
+                },
+                onDelete = {
+                    menuOpen = false
+                    onDelete()
+                },
             )
         }
+
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(
+                    onClick = onClick,
+                    onLongClick = { if (conversation.isChannel) menuOpen = true },
+                ),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainer,
+            ),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ConversationIcon(conversation)
+                Spacer(Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(conversation.title, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        text = conversation.subtitle(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (conversation.unreadCount > 0) {
+                    Badge { Text("${conversation.unreadCount}") }
+                }
+            }
+        }
     }
+}
+
+@Composable
+private fun ConversationIcon(conversation: ConversationSummary) {
+    // A direct message uses the same companion avatar as the contacts list — the
+    // node's first letter/emoji over its per-node colour — so the two screens match.
+    if (!conversation.isChannel) {
+        NodeAvatar(
+            type = conversation.contactType ?: NodeType.CHAT,
+            isBlocked = false,
+            size = 44,
+            name = conversation.title,
+            colorSeed = conversation.id,
+        )
+        return
     }
+    // Channels keep their kind glyph (public / private / hashtag) in the tonal circle.
+    val tint = conversation.channelKind?.tint() ?: NodeColors.Chat
+    val icon: ImageVector = conversation.channelKind?.icon() ?: Icons.Filled.Public
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(tint.copy(alpha = 0.22f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.size(22.dp),
+        )
+    }
+}
+
+private fun ConversationSummary.subtitle(): String = when {
+    !isChannel -> "Direct message"
+    else -> channelKind?.label() ?: "Channel"
 }
 
 @Composable

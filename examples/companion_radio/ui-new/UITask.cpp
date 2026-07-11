@@ -252,6 +252,14 @@ class HomeScreen : public UIScreen {
   int  _rec_sel;
   static const int REC_MENU_ITEMS = 3;
 
+  // --- Radio page: rolling noise-floor graph, RAM only ---
+  static const int NF_HIST_W   = 126;   // one sample per pixel of the plot box
+  static const int NF_FLOOR_MIN = -120; // dBm mapped to an empty bar (radio clamps here)
+  static const int NF_FLOOR_MAX = -70;  // dBm (or noisier) mapped to a full-height bar
+  int8_t        _nf_hist[NF_HIST_W];    // newest at index _nf_count-1 (values shift left)
+  int           _nf_count;              // valid samples so far, <= NF_HIST_W
+  unsigned long _nf_last_sample;        // millis() of the last sample taken
+
   // "12s" / "5m" / "2h" for an age in millis, like the Recent page
   static void fmtAge(char* dest, unsigned long age_millis) {
     unsigned long secs = age_millis / 1000;
@@ -683,6 +691,70 @@ class HomeScreen : public UIScreen {
     return "";
   }
 
+  // Push one noise-floor reading into the rolling history, at most once a second
+  // so the graph advances at a steady rate regardless of how often we re-render.
+  void sampleNoiseFloor() {
+    unsigned long now = millis();
+    if (_nf_count > 0 && (now - _nf_last_sample) < 1000) return;
+    _nf_last_sample = now;
+
+    int v = radio_driver.getNoiseFloor();
+    if (v < -128) v = -128;             // keep it inside int8_t; graph clamps anyway
+    if (v >  127) v =  127;
+    if (_nf_count < NF_HIST_W) {
+      _nf_hist[_nf_count++] = (int8_t)v;
+    } else {                            // full: drop the oldest, append newest
+      memmove(_nf_hist, _nf_hist + 1, (NF_HIST_W - 1) * sizeof(_nf_hist[0]));
+      _nf_hist[NF_HIST_W - 1] = (int8_t)v;
+    }
+  }
+
+  // Radio page: the fixed params as text, then the live noise floor as a small
+  // bar graph in a box (newest sample pinned to the right edge, Meshtastic-style).
+  void renderRadio(DisplayDriver& display) {
+    char tmp[40];
+    sampleNoiseFloor();
+
+    display.setColor(DisplayDriver::YELLOW);
+    display.setTextSize(1);
+    display.setCursor(0, 15);
+    sprintf(tmp, "FQ:%06.3f  SF:%d", _node_prefs->freq, _node_prefs->sf);
+    display.print(tmp);
+    display.setCursor(0, 25);
+    sprintf(tmp, "BW:%.2f CR:%d TX:%d", _node_prefs->bw, _node_prefs->cr, _node_prefs->tx_power_dbm);
+    display.print(tmp);
+
+    // label row: "Noise floor" left, current value right
+    int nf = radio_driver.getNoiseFloor();
+    display.setColor(DisplayDriver::LIGHT);
+    display.setCursor(0, 36);
+    display.print("Noise floor");
+    display.setColor(DisplayDriver::GREEN);
+    sprintf(tmp, "%ddBm", nf);
+    display.drawTextRightAlign(display.width() - 1, 36, tmp);
+
+    // graph box
+    const int box_x = 0, box_y = 46, box_w = display.width(), box_h = 18;
+    display.setColor(DisplayDriver::LIGHT);
+    display.drawRect(box_x, box_y, box_w, box_h);
+
+    const int plot_h  = box_h - 3;              // inner rows: baseline .. top, clear of borders
+    const int base_y  = box_y + box_h - 2;      // one px above the bottom border
+    const int span    = NF_FLOOR_MAX - NF_FLOOR_MIN;
+
+    display.setColor(DisplayDriver::GREEN);
+    for (int i = 0; i < _nf_count; i++) {
+      int v = _nf_hist[i];
+      if (v < NF_FLOOR_MIN) v = NF_FLOOR_MIN;
+      if (v > NF_FLOOR_MAX) v = NF_FLOOR_MAX;
+      int h = ((v - NF_FLOOR_MIN) * plot_h) / span;
+      // newest sample (i == _nf_count-1) sits at the right inner edge
+      int x = (box_x + box_w - 2) - (_nf_count - 1 - i);
+      if (x <= box_x) break;                    // ran off the left border
+      if (h > 0) display.fillRect(x, base_y - h + 1, 1, h);
+    }
+  }
+
   // Top status bar: battery icon + percent (left), page title (centre),
   // bluetooth glyph and clock (right), with a separator line underneath.
   void renderTopBar(DisplayDriver& display) {
@@ -953,6 +1025,7 @@ public:
        _advert_menu(false), _advert_sel(0), _scan_menu(false), _scan_sel(0),
        _scan_ctl(false), _scan_row(0), _scan_scroll(0), _rep_menu(false), _rep_sel(0),
        _rec_ctl(false), _rec_row(0), _rec_scroll(0), _rec_menu(false), _rec_sel(0),
+       _nf_count(0), _nf_last_sample(0),
        sensors_lpp(200) {  }
 
   // returning from a channel view: stay on the Channels page, keep control, and
@@ -1105,24 +1178,7 @@ public:
         }
       }
     } else if (_page == HomePage::RADIO) {
-      display.setColor(DisplayDriver::YELLOW);
-      display.setTextSize(1);
-      // freq / sf
-      display.setCursor(0, 20);
-      sprintf(tmp, "FQ: %06.3f   SF: %d", _node_prefs->freq, _node_prefs->sf);
-      display.print(tmp);
-
-      display.setCursor(0, 31);
-      sprintf(tmp, "BW: %03.2f     CR: %d", _node_prefs->bw, _node_prefs->cr);
-      display.print(tmp);
-
-      // tx power,  noise floor
-      display.setCursor(0, 42);
-      sprintf(tmp, "TX: %ddBm", _node_prefs->tx_power_dbm);
-      display.print(tmp);
-      display.setCursor(0, 53);
-      sprintf(tmp, "Noise floor: %d", radio_driver.getNoiseFloor());
-      display.print(tmp);
+      renderRadio(display);
     } else if (_page == HomePage::BLUETOOTH) {
       display.setTextSize(1);
       if (!_task->isSerialEnabled()) {
@@ -1265,6 +1321,7 @@ public:
     // Bluetooth tracks the live link RSSI, which is re-read every 2s.
     int page_delay = 5000;
     if (_page == HomePage::SCAN || _page == HomePage::RECENT) page_delay = 1000;
+    if (_page == HomePage::RADIO) page_delay = 1000;   // graph advances ~1 sample/s
     if (_page == HomePage::BLUETOOTH && _task->hasConnection()) page_delay = 1000;
 #if ENV_INCLUDE_GPS == 1
     if (_page == HomePage::GPS) page_delay = 1000;

@@ -62,7 +62,12 @@ data class NearbyNode(
 /** One hop of a completed path trace. */
 data class TraceHop(
     val hashHex: String,
-    /** Null when no known contact starts with this hash. */
+    /** Set when exactly one known contact starts with this hash. */
     val name: String?,
     val snr: Float,
+    /**
+     * Every known contact sharing this hash prefix. More than one means the hop is
+     * ambiguous -- the UI shows "Duplicate (hash)" and lets the user pick.
+     */
+    val candidates: List<String> = emptyList(),
 )

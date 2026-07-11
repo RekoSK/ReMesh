@@ -44,6 +44,8 @@ object MeshCoreProtocol {
         const val SEND_CHANNEL_TXT_MSG = 3
         const val GET_CONTACTS = 4
         const val ADD_UPDATE_CONTACT = 9
+        const val RESET_PATH = 13
+        const val REMOVE_CONTACT = 15
         const val SET_DEVICE_TIME = 6
         const val SEND_SELF_ADVERT = 7
         const val SET_ADVERT_NAME = 8
@@ -562,6 +564,24 @@ object MeshCoreProtocol {
         }
     }
 
+    /** `[0]=13, [1..32]=public key`. Clears a contact's out path so traffic floods again. */
+    fun encodeResetPath(publicKey: ByteArray): ByteArray {
+        require(publicKey.size == PUB_KEY_SIZE) { "public key must be 32 bytes" }
+        return ByteArray(1 + PUB_KEY_SIZE).also {
+            it[0] = Cmd.RESET_PATH.toByte()
+            publicKey.copyInto(it, 1)
+        }
+    }
+
+    /** `[0]=15, [1..32]=public key`. Deletes the contact from the node's table. */
+    fun encodeRemoveContact(publicKey: ByteArray): ByteArray {
+        require(publicKey.size == PUB_KEY_SIZE) { "public key must be 32 bytes" }
+        return ByteArray(1 + PUB_KEY_SIZE).also {
+            it[0] = Cmd.REMOVE_CONTACT.toByte()
+            publicKey.copyInto(it, 1)
+        }
+    }
+
     /** `[0]=56, [1]=stats type`. */
     fun encodeGetStats(type: Int): ByteArray =
         byteArrayOf(Cmd.GET_STATS.toByte(), type.toByte())
@@ -654,6 +674,9 @@ object MeshCoreProtocol {
                     millivolts = readU16(frame, 1),
                     usedKb = if (frame.size >= 11) readU32(frame, 3) else 0L,
                     totalKb = if (frame.size >= 11) readU32(frame, 7) else 0L,
+                    // Optional trailing charge flag; null when the node's firmware
+                    // predates it (older builds send only the 11-byte reply).
+                    charging = if (frame.size >= 12) frame[11].toInt() != 0 else null,
                 )
                 Resp.CHANNEL_INFO -> MeshFrame.ChannelInfo(
                     index = frame[1].toInt() and 0xFF,
@@ -1153,7 +1176,13 @@ sealed interface MeshFrame {
         override val code = MeshCoreProtocol.Resp.NO_MORE_MESSAGES
     }
 
-    data class Battery(val millivolts: Int, val usedKb: Long, val totalKb: Long) : MeshFrame {
+    data class Battery(
+        val millivolts: Int,
+        val usedKb: Long,
+        val totalKb: Long,
+        /** Whether the node is on external power. Null if its firmware doesn't report it. */
+        val charging: Boolean? = null,
+    ) : MeshFrame {
         override val code = MeshCoreProtocol.Resp.BATT_AND_STORAGE
 
         /** A node that never reported storage sends totalKb = 0; don't divide by it. */

@@ -135,11 +135,17 @@ class ConfigCodecTest {
     @Test
     fun `out path is null when unknown, empty when direct, hex otherwise`() {
         val path = byteArrayOf(0xF2.toByte(), 0x5B, 0x00, 0x00)
-        // int8 -1: the node knows no route.
+        // 0xFF (read as -1): the node knows no route.
         assertNull(ConfigCodec.formatOutPath(-1, path))
-        // Zero-length path: a direct route.
+        assertNull(ConfigCodec.formatOutPath(0xFF, path))
+        // Zero hop count is a direct route, whatever the hash-size mode.
         assertEquals("", ConfigCodec.formatOutPath(0, path))
+        // 0x40 packs "2-byte hash mode, 0 hops": still direct, NOT 64 zero bytes.
+        assertEquals("", ConfigCodec.formatOutPath(0x40, path))
+        // 0x02 packs "1-byte hash mode, 2 hops": two bytes of path.
         assertEquals("f25b", ConfigCodec.formatOutPath(2, path))
+        // 0x42 packs "2-byte hash mode, 2 hops": four bytes of path.
+        assertEquals("f25b0000", ConfigCodec.formatOutPath(0x42, path))
     }
 
     @Test

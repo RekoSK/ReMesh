@@ -7,9 +7,11 @@ import com.rekosk.remesh.ble.MeshBleException
 import com.rekosk.remesh.ble.MeshCoreBleClient
 import com.rekosk.remesh.ble.MeshCoreProtocol
 import com.rekosk.remesh.ble.MeshFrame
+import com.rekosk.remesh.ble.RawPacket
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.ChannelKind
 import com.rekosk.remesh.data.model.Contact
+import com.rekosk.remesh.data.model.ConversationSummary
 import com.rekosk.remesh.data.model.DeliveryState
 import com.rekosk.remesh.data.model.HeardRepeat
 import com.rekosk.remesh.data.model.LoggedPacket
@@ -25,13 +27,18 @@ import com.rekosk.remesh.data.config.OtherConfig
 import com.rekosk.remesh.data.config.PositionConfig
 import com.rekosk.remesh.data.config.RadioConfig
 import com.rekosk.remesh.data.model.MeshMessage
+import com.rekosk.remesh.data.model.MessageRoute
+import com.rekosk.remesh.data.model.RepeaterContactRef
 import com.rekosk.remesh.data.model.NodeSettings
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.Route
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.Channel as CoroutineChannel
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -41,6 +48,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -64,9 +72,13 @@ private const val MAX_DRAIN_ITERATIONS = 200
 class MeshRepository(
     private val client: MeshCoreBleClient,
     private val scope: CoroutineScope,
+    private val nodeStorage: NodeStorage,
 ) {
     val connectionState: StateFlow<ConnectionState> = client.state
     val devices: StateFlow<List<com.rekosk.remesh.ble.DiscoveredDevice>> = client.devices
+
+    /** Live RSSI of the BLE link to the connected node (dBm); null when disconnected. */
+    val connectionRssi: StateFlow<Int?> = client.connectionRssi
 
     val isRadioConnected: StateFlow<Boolean> =
         client.state
@@ -82,6 +94,29 @@ class MeshRepository(
     private val _messages = MutableStateFlow<Map<String, List<MeshMessage>>>(emptyMap())
     val messages: StateFlow<Map<String, List<MeshMessage>>> = _messages.asStateFlow()
 
+    /**
+     * The node's recently-heard adverts, accumulated across refreshes and persisted.
+     * Lives here rather than in the ViewModel so it is part of a node's saved block
+     * and can be shown while that node is offline.
+     */
+    private val _recentAdverts = MutableStateFlow<List<RecentAdvert>>(emptyList())
+    val recentAdverts: StateFlow<List<RecentAdvert>> = _recentAdverts.asStateFlow()
+
+    /** Conversation id -> when the user last opened it, for unread counts. Persisted. */
+    private val _readMarks = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /** Contact ids the user has starred. App-side only; see [Contact.isFavorite]. */
+    private val favoriteIds = mutableSetOf<String>()
+
+    /**
+     * The messaging list: every channel, plus any direct-message thread that has
+     * messages. Recomputed whenever channels, messages, read marks or contacts change.
+     */
+    val conversations: StateFlow<List<ConversationSummary>> =
+        combine(_channels, _messages, _readMarks, _contacts) { channels, messages, marks, contacts ->
+            buildConversations(channels, messages, marks, contacts)
+        }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
     private val _isSyncing = MutableStateFlow(false)
     val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
 
@@ -90,6 +125,14 @@ class MeshRepository(
 
     private val _selfInfo = MutableStateFlow<MeshFrame.SelfInfo?>(null)
     val selfInfo: StateFlow<MeshFrame.SelfInfo?> = _selfInfo.asStateFlow()
+
+    /**
+     * Our own node's map position, kept separately from [selfInfo] so it survives a
+     * disconnect: live reads set it from SELF_INFO, opening a saved node restores it
+     * from disk, so the Node Map can place "you" while the radio is offline.
+     */
+    private val _selfPosition = MutableStateFlow<SelfPosition?>(null)
+    val selfPosition: StateFlow<SelfPosition?> = _selfPosition.asStateFlow()
 
     private val _deviceInfo = MutableStateFlow<MeshFrame.DeviceInfo?>(null)
     val deviceInfo: StateFlow<MeshFrame.DeviceInfo?> = _deviceInfo.asStateFlow()
@@ -123,7 +166,38 @@ class MeshRepository(
     private val drainRequests = CoroutineChannel<Unit>(CoroutineChannel.CONFLATED)
     private val contactReloadRequests = CoroutineChannel<Unit>(CoroutineChannel.CONFLATED)
 
+    // ---------------- per-node persistence ----------------
+
+    /** Every node we have ever connected to, keyed by its public identity key. */
+    private val savedNodesByKey = LinkedHashMap<String, PersistedNode>()
+
+    private val _savedNodes = MutableStateFlow<List<SavedNodeSummary>>(emptyList())
+
+    /** The saved nodes as the connect screen lists them, newest connection first. */
+    val savedNodes: StateFlow<List<SavedNodeSummary>> = _savedNodes.asStateFlow()
+
+    /** Which node's data the flows above currently reflect. Null before any connect. */
+    private var activeKey: String? = null
+
+    /** The BLE address of the live connection, remembered so a save can record it. */
+    private var currentAddress: String? = null
+
+    // Conflated + debounced: a burst of message updates collapses into one disk write.
+    private val saveRequests = CoroutineChannel<Unit>(CoroutineChannel.CONFLATED)
+
     init {
+        scope.launch {
+            savedNodesByKey.putAll(nodeStorage.load().associateBy { it.key })
+            _savedNodes.value = summaries()
+        }
+        scope.launch {
+            for (unused in saveRequests) {
+                delay(SAVE_DEBOUNCE_MS)
+                val snapshot = snapshotActive() ?: continue
+                runCatching { nodeStorage.save(snapshot) }
+                    .onFailure { Log.w(TAG, "could not persist node store", it) }
+            }
+        }
         scope.launch {
             for (unused in drainRequests) {
                 runCatching { drainMessages() }
@@ -145,7 +219,10 @@ class MeshRepository(
                     is MeshFrame.LogRxData -> {
                         logPacket(frame)
                         onHeardPacket(frame)
+                        onIncomingRxCopy(frame)
                     }
+                    // A direct message we sent was acknowledged by its recipient.
+                    is MeshFrame.SendConfirmed -> onSendConfirmed(frame)
                     is MeshFrame.Unhandled -> when (frame.code) {
                         // A new node advertised; its contact row may be new.
                         MeshCoreProtocol.Push.NEW_ADVERT -> {
@@ -176,10 +253,17 @@ class MeshRepository(
 
     fun startScan() = client.startScan()
     fun stopScan() = client.stopScan()
+
+    /** Asks the BLE stack for a fresh link-RSSI reading; result lands in [connectionRssi]. */
+    fun readConnectionRssi() = client.readConnectionRssi()
     fun clearError() { _lastError.value = null }
 
     suspend fun connect(address: String) {
         _lastError.value = null
+        currentAddress = address
+        // A fresh link asks for the whole contact list, then merges it over whatever
+        // was restored from disk for this node.
+        contactsSince = 0L
         try {
             client.connect(address)
             handshake()
@@ -189,15 +273,20 @@ class MeshRepository(
         }
     }
 
+    /**
+     * Drops the radio link but keeps the last node's data on screen so the user can
+     * still read its history offline. Only the live, connection-bound state is cleared;
+     * the persisted view (contacts, channels, messages, adverts) stays put.
+     */
     fun disconnect() {
         client.disconnect()
-        _contacts.value = emptyList()
-        _channels.value = emptyList()
-        _messages.value = emptyMap()
+        flushActive()
         contactKeys.clear()
         synchronized(sentPayloads) { sentPayloads.clear() }
+        synchronized(receivedPayloads) { receivedPayloads.clear() }
+        synchronized(bufferedRxCopies) { bufferedRxCopies.clear() }
         contactsSince = 0L
-        _selfName.value = null
+        currentAddress = null
         _selfInfo.value = null
         _deviceInfo.value = null
         _storage.value = null
@@ -217,6 +306,10 @@ class MeshRepository(
             if (self is MeshFrame.SelfInfo) {
                 _selfInfo.value = self
                 _selfName.value = self.name
+                // Restore this node's saved block before the reads below merge into it,
+                // so the user sees history the instant the handshake finishes.
+                switchActiveNode(self.publicKey.toHex(), self.name)
+                updateSelfPosition(self)
             }
 
             val info = client.commandSingle(MeshCoreProtocol.encodeDeviceQuery())
@@ -358,6 +451,14 @@ class MeshRepository(
         if (reply is MeshFrame.SelfInfo) {
             _selfInfo.value = reply
             _selfName.value = reply.name
+            updateSelfPosition(reply)
+        }
+    }
+
+    /** Mirrors a fresh SELF_INFO position into [selfPosition] (kept only when known). */
+    private fun updateSelfPosition(self: MeshFrame.SelfInfo) {
+        if (self.latE6 != 0 || self.lonE6 != 0) {
+            _selfPosition.value = SelfPosition(self.name, self.latE6, self.lonE6)
         }
     }
 
@@ -752,11 +853,19 @@ class MeshRepository(
         _contacts.update { existing ->
             val byId = existing.associateBy { it.id }.toMutableMap()
             fetched.forEach { byId[it.id] = it }
-            byId.values.sortedWith(
-                compareByDescending<Contact> { it.lastSeenEpochMs ?: 0L }.thenBy { it.name },
-            )
+            orderedContacts(byId.values.toList())
         }
+        requestSave()
     }
+
+    /** Stars first, then most-recently-heard, then by name. Applies the favourite flag. */
+    private fun orderedContacts(list: List<Contact>): List<Contact> =
+        list.map { it.copy(isFavorite = it.id in favoriteIds) }
+            .sortedWith(
+                compareByDescending<Contact> { it.isFavorite }
+                    .thenByDescending { it.lastSeenEpochMs ?: 0L }
+                    .thenBy { it.name },
+            )
 
     private suspend fun loadChannelsLocked() {
         val found = mutableListOf<Channel>()
@@ -777,6 +886,7 @@ class MeshRepository(
         }
         _channels.value = found
         _rawChannels.value = raw
+        requestSave()
     }
 
     private suspend fun drainMessages() = syncMutex.withLock { drainMessagesLocked() }
@@ -838,10 +948,11 @@ class MeshRepository(
         val id = channelConversationId(frame.channelIndex)
         val (sender, body) = splitChannelSender(frame.text)
         val author = sender ?: "Unknown"
+        val messageId = "${id}-${frame.timestampEpochSec}-${frame.text.hashCode()}"
         val added = append(
             id,
             MeshMessage(
-                id = "${id}-${frame.timestampEpochSec}-${frame.text.hashCode()}",
+                id = messageId,
                 author = author,
                 text = body,
                 timestampEpochMs = frame.timestampEpochSec * 1000,
@@ -854,6 +965,8 @@ class MeshRepository(
             ),
         )
         if (added) {
+            // Correlate any overheard raw copies so "Show message routes" can name the hops.
+            registerReceivedRoutes(id, messageId, frame, sender, body)
             _events.tryEmit(
                 MeshEvent.MessageReceived(
                     conversationId = id,
@@ -881,6 +994,16 @@ class MeshRepository(
      */
     private val sentPayloads = object : LinkedHashMap<String, SentMessage>(16, 0.75f, false) {
         override fun removeEldestEntry(eldest: Map.Entry<String, SentMessage>): Boolean =
+            size > MAX_TRACKED_SENDS
+    }
+
+    /**
+     * Ack code the node promised for each direct message we sent -> where it lives.
+     * A matching PUSH_CODE_SEND_CONFIRMED means the recipient acknowledged it, which
+     * is a DM's second tick.
+     */
+    private val pendingAcks = object : LinkedHashMap<Long, SentMessage>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<Long, SentMessage>): Boolean =
             size > MAX_TRACKED_SENDS
     }
 
@@ -919,6 +1042,107 @@ class MeshRepository(
         }
     }
 
+    // ---------------- incoming message routes ----------------
+
+    /** One overheard copy of a message, before it is attached to that message. */
+    private data class RxCopy(val pathHashesHex: List<String>, val snr: Float, val rssi: Int)
+
+    /**
+     * Reconstructed payload (hex) of each incoming *channel* message -> where it lives,
+     * the mirror of [sentPayloads]. An overheard copy (PUSH_CODE_LOG_RX_DATA) whose
+     * payload matches is that message reaching us along one route.
+     */
+    private val receivedPayloads = object : LinkedHashMap<String, SentMessage>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, SentMessage>): Boolean =
+            size > MAX_TRACKED_SENDS
+    }
+
+    /**
+     * Overheard copies whose message has not been synced in yet, keyed by payload.
+     * LOG_RX_DATA for a packet usually arrives before the decoded message, so the
+     * copy waits here until [registerReceivedRoutes] claims it.
+     */
+    private val bufferedRxCopies = object : LinkedHashMap<String, MutableList<RxCopy>>(16, 0.75f, false) {
+        override fun removeEldestEntry(eldest: Map.Entry<String, MutableList<RxCopy>>): Boolean =
+            size > MAX_TRACKED_SENDS
+    }
+
+    /** The path split into its per-hop key prefixes, sender-side first; empty if direct. */
+    private fun RawPacket.pathHashesHex(): List<String> {
+        val hs = hashSizeBytes
+        if (hs <= 0 || path.isEmpty() || path.size < hs) return emptyList()
+        return (0 until path.size / hs).map {
+            path.copyOfRange(it * hs, (it + 1) * hs).toHex().uppercase()
+        }
+    }
+
+    /**
+     * A copy of some packet came off the air. If it is a channel message we have
+     * (or are about to) sync in, remember the route it travelled to reach us.
+     */
+    private fun onIncomingRxCopy(frame: MeshFrame.LogRxData) {
+        val packet = frame.packet() ?: return
+        if (packet.payloadType != MeshCoreProtocol.PacketHeader.PAYLOAD_TYPE_GRP_TXT) return
+        val payloadHex = packet.payload.toHex()
+        // Our own sent messages are handled by onHeardPacket; skip them here.
+        if (synchronized(sentPayloads) { sentPayloads.containsKey(payloadHex) }) return
+
+        val copy = RxCopy(packet.pathHashesHex(), frame.snr, frame.rssi)
+        val target = synchronized(receivedPayloads) { receivedPayloads[payloadHex] }
+        if (target != null) {
+            attachRoute(target, copy)
+        } else {
+            synchronized(bufferedRxCopies) {
+                val list = bufferedRxCopies.getOrPut(payloadHex) { mutableListOf() }
+                if (list.none { it.pathHashesHex == copy.pathHashesHex }) list.add(copy)
+            }
+        }
+    }
+
+    private fun attachRoute(target: SentMessage, copy: RxCopy) {
+        updateMessage(target.conversationId, target.messageId) { message ->
+            // One row per distinct path; a repeated copy along the same path is one route.
+            if (message.routes.any { it.pathHashesHex == copy.pathHashesHex }) {
+                message
+            } else {
+                message.copy(routes = message.routes + MessageRoute(copy.pathHashesHex, copy.snr, copy.rssi))
+            }
+        }
+    }
+
+    /**
+     * Reproduce a received channel message's on-air payload (as [expectedChannelPayload]
+     * does for our own) so overheard copies can be matched to it, then claim any copies
+     * that were already buffered waiting for it.
+     */
+    private fun registerReceivedRoutes(
+        conversationId: String,
+        messageId: String,
+        frame: MeshFrame.ChannelMessage,
+        sender: String?,
+        body: String,
+    ) {
+        if (sender == null) return
+        val secret = channelSecret(frame.channelIndex) ?: return
+        val payloadHex = runCatching {
+            ChannelCrypto.groupTextPayload(secret, frame.timestampEpochSec, sender, body).toHex()
+        }.getOrNull() ?: return
+
+        val target = SentMessage(conversationId, messageId)
+        synchronized(receivedPayloads) { receivedPayloads[payloadHex] = target }
+        val buffered = synchronized(bufferedRxCopies) { bufferedRxCopies.remove(payloadHex) }
+        buffered?.forEach { attachRoute(target, it) }
+    }
+
+    /** Known contacts whose key starts with [hashHex], for a route hop's tap target. */
+    fun contactsMatchingHash(hashHex: String): List<RepeaterContactRef> {
+        val prefix = hashHex.lowercase()
+        return _rawContacts.value
+            .filter { it.publicKey.toHex().startsWith(prefix) }
+            .map { RepeaterContactRef(contactConversationId(it.keyPrefix), it.name.ifBlank { "(unnamed)" }) }
+            .distinctBy { it.contactId }
+    }
+
     private fun updateMessage(
         conversationId: String,
         messageId: String,
@@ -932,6 +1156,7 @@ class MeshRepository(
                 it[index] = transform(it[index])
             })
         }
+        requestSave()
     }
 
     /** Forgets a message locally. The node has no delete command; nothing is sent. */
@@ -943,6 +1168,7 @@ class MeshRepository(
         synchronized(sentPayloads) {
             sentPayloads.entries.removeAll { it.value.messageId == messageId }
         }
+        requestSave()
     }
 
     /** Returns false when this message was already stored, so callers do not re-notify. */
@@ -958,6 +1184,7 @@ class MeshRepository(
                 all + (conversationId to (existing + message).sortedBy { it.timestampEpochMs })
             }
         }
+        if (added) requestSave()
         return added
     }
 
@@ -978,6 +1205,7 @@ class MeshRepository(
         try {
             val accepted: Boolean
             var onAirPayload: ByteArray? = null
+            var expectedAck: Long? = null
 
             if (conversationId.startsWith(CHANNEL_PREFIX)) {
                 val index = conversationId.removePrefix(CHANNEL_PREFIX).toInt()
@@ -998,6 +1226,9 @@ class MeshRepository(
                     isTerminal = { it is MeshFrame.Sent || it is MeshFrame.Error },
                 ).last()
                 accepted = reply is MeshFrame.Sent
+                // The node tells us the ack it will forward on delivery; a matching
+                // SEND_CONFIRMED later is the DM's second tick.
+                expectedAck = (reply as? MeshFrame.Sent)?.expectedAck
             }
 
             if (!accepted) {
@@ -1023,6 +1254,9 @@ class MeshRepository(
                 synchronized(sentPayloads) {
                     sentPayloads[payload.toHex()] = SentMessage(conversationId, messageId)
                 }
+            }
+            expectedAck?.let { ack ->
+                synchronized(pendingAcks) { pendingAcks[ack] = SentMessage(conversationId, messageId) }
             }
         } catch (e: MeshBleException) {
             _lastError.value = e.message
@@ -1105,7 +1339,23 @@ class MeshRepository(
      * ERR_CODE_NOT_FOUND for the rest. The table only holds 16 entries, so most of
      * these queries come back empty, and that is the expected case rather than a fault.
      */
-    suspend fun recentAdverts(): List<RecentAdvert> {
+    /**
+     * Re-reads the node's advert table and merges it into [recentAdverts], newest
+     * first. Accumulates across refreshes: the node's table holds only 16 entries and
+     * is lost on reboot, so a node dropping out of a later read has merely aged out.
+     */
+    suspend fun refreshRecentAdverts() {
+        val fresh = fetchRecentAdverts()
+        if (fresh.isEmpty()) return
+        _recentAdverts.update { existing ->
+            val byKey = existing.associateBy { it.publicKey.toList() }.toMutableMap()
+            fresh.forEach { byKey[it.publicKey.toList()] = it }
+            byKey.values.sortedByDescending { it.receivedEpochMs }
+        }
+        requestSave()
+    }
+
+    private suspend fun fetchRecentAdverts(): List<RecentAdvert> {
         if (connectionState.value !is ConnectionState.Ready) return emptyList()
 
         val found = mutableListOf<RecentAdvert>()
@@ -1292,6 +1542,233 @@ class MeshRepository(
     fun channelById(id: String): Channel? = _channels.value.firstOrNull { it.id == id }
     fun contactById(id: String): Contact? = _contacts.value.firstOrNull { it.id == id }
 
+    // ---------------- per-node persistence ----------------
+
+    /**
+     * Opens a saved node for offline reading. Loads its stored contacts, channels,
+     * messages and adverts into the live flows without touching the radio, so the UI
+     * shows exactly what it would when connected -- only the actions that need a link
+     * (send, sync, tools) stay guarded by [connectionState]. Refused while connected,
+     * so a live session is never silently replaced.
+     */
+    fun openSavedNode(key: String) {
+        if (connectionState.value is ConnectionState.Ready) return
+        val node = savedNodesByKey[key] ?: return
+        switchActiveNode(key, node.name)
+    }
+
+    /**
+     * Points the live flows at [key]'s saved block. Called both when a handshake
+     * identifies the node (before the fresh reads merge in) and when the user opens a
+     * node offline. Clears anything not restored so one node's data never bleeds into
+     * another's.
+     */
+    private fun switchActiveNode(key: String, name: String) {
+        activeKey = key
+        val node = savedNodesByKey[key]
+        favoriteIds.clear()
+        node?.contacts?.filter { it.isFavorite }?.forEach { favoriteIds += it.id }
+        _readMarks.value = node?.readMarks.orEmpty()
+        _contacts.value = orderedContacts(node?.contacts?.map { it.toDomain() }.orEmpty())
+        _channels.value = node?.channels?.map { it.toDomain() }.orEmpty()
+        _messages.value = node?.messages
+            ?.mapValues { (_, list) -> list.map { it.toDomain() } }
+            .orEmpty()
+        _recentAdverts.value = node?.adverts?.map { it.toDomain() }.orEmpty()
+        _selfName.value = name
+        _selfPosition.value = node
+            ?.takeIf { it.selfLatE6 != 0 || it.selfLonE6 != 0 }
+            ?.let { SelfPosition(it.name, it.selfLatE6, it.selfLonE6) }
+        // Rebuild the id -> key-prefix map from the ids themselves, so a contact opened
+        // offline still resolves (sending stays blocked until connected regardless).
+        contactKeys.clear()
+        _contacts.value.forEach { contact ->
+            runCatching {
+                contactKeys[contact.id] = contact.id.removePrefix(CONTACT_PREFIX).hexToBytes()
+            }
+        }
+    }
+
+    /**
+     * Folds the active node's current flows back into [savedNodesByKey], refreshes the
+     * summary list, and returns the whole store to write out. Runs off the main thread
+     * from the saver; reads only thread-safe [StateFlow] values.
+     */
+    private fun snapshotActive(): List<PersistedNode>? {
+        val key = activeKey ?: return null
+        val existing = savedNodesByKey[key]
+        val connected = connectionState.value is ConnectionState.Ready
+        savedNodesByKey[key] = PersistedNode(
+            key = key,
+            name = _selfName.value ?: existing?.name ?: key.take(8),
+            advType = _selfInfo.value?.advType ?: existing?.advType ?: 0,
+            address = currentAddress ?: existing?.address,
+            lastConnected = if (connected) System.currentTimeMillis() else existing?.lastConnected ?: 0L,
+            selfLatE6 = _selfInfo.value?.latE6 ?: existing?.selfLatE6 ?: 0,
+            selfLonE6 = _selfInfo.value?.lonE6 ?: existing?.selfLonE6 ?: 0,
+            contacts = _contacts.value.map { it.toPersisted() },
+            channels = _channels.value.map { it.toPersisted() },
+            adverts = _recentAdverts.value.map { it.toPersisted() },
+            messages = _messages.value.mapValues { (_, list) -> list.map { it.toPersisted() } },
+            readMarks = _readMarks.value,
+        )
+        _savedNodes.value = summaries()
+        return savedNodesByKey.values.toList()
+    }
+
+    /** Persist immediately, bypassing the debounce -- used when a link is dropping. */
+    private fun flushActive() {
+        val snapshot = snapshotActive() ?: return
+        scope.launch {
+            runCatching { nodeStorage.save(snapshot) }
+                .onFailure { Log.w(TAG, "could not flush node store", it) }
+        }
+    }
+
+    private fun requestSave() {
+        if (activeKey != null) saveRequests.trySend(Unit)
+    }
+
+    private fun summaries(): List<SavedNodeSummary> =
+        savedNodesByKey.values
+            .map { SavedNodeSummary(it.key, it.name, it.advType, it.address, it.lastConnected) }
+            .sortedByDescending { it.lastConnectedEpochMs }
+
+    // ---------------- conversations, unread & read marks ----------------
+
+    /** Marks a conversation read up to now, so its unread badge clears. */
+    fun markConversationRead(conversationId: String) {
+        val latest = _messages.value[conversationId]
+            ?.maxOfOrNull { it.receivedEpochMs ?: it.timestampEpochMs } ?: 0L
+        val mark = maxOf(System.currentTimeMillis(), latest)
+        _readMarks.update { it + (conversationId to mark) }
+        requestSave()
+    }
+
+    // ---------------- contact actions (detail screen) ----------------
+
+    /** The full contact row, kept for the fields the app model drops (key, path, coords). */
+    fun rawContactById(id: String): MeshFrame.Contact? =
+        _rawContacts.value.firstOrNull { contactConversationId(it.keyPrefix) == id }
+
+    private fun pubKeyOf(id: String): ByteArray? = rawContactById(id)?.publicKey
+
+    /** The node's advert-path record for a contact -- how its last advert reached us. */
+    suspend fun advertPathFor(contactId: String): MeshFrame.AdvertPath? {
+        if (connectionState.value !is ConnectionState.Ready) return null
+        val key = pubKeyOf(contactId) ?: return null
+        return runCatching {
+            client.commandSingle(MeshCoreProtocol.encodeGetAdvertPath(key))
+        }.getOrNull() as? MeshFrame.AdvertPath
+    }
+
+    /** App-side star. Re-sorts the list and, via the store, is remembered forever. */
+    fun setFavorite(contactId: String, favorite: Boolean) {
+        if (favorite) favoriteIds += contactId else favoriteIds -= contactId
+        _contacts.update { orderedContacts(it) }
+        requestSave()
+    }
+
+    /** Clears a contact's known path so the next message floods again. */
+    suspend fun resetPath(contactId: String): String? {
+        val key = pubKeyOf(contactId) ?: return "Unknown contact"
+        val error = write("Reset route") { client.commandSingle(MeshCoreProtocol.encodeResetPath(key)) }
+        if (error == null) loadContacts()
+        return error
+    }
+
+    /**
+     * Pins a manual outgoing route to a contact. [path] is the concatenated repeater
+     * hashes the user picked; an empty path means a zero-hop direct route.
+     */
+    suspend fun setOutPath(contactId: String, path: ByteArray): String? {
+        val raw = rawContactById(contactId) ?: return "Unknown contact"
+        val error = write("Set route") {
+            client.commandSingle(
+                MeshCoreProtocol.encodeAddUpdateContact(
+                    publicKey = raw.publicKey,
+                    type = raw.type,
+                    flags = raw.flags,
+                    outPathLen = path.size,
+                    outPath = path,
+                    name = raw.name,
+                    lastAdvertEpochSec = raw.lastAdvertEpochSec,
+                    latE6 = raw.latE6,
+                    lonE6 = raw.lonE6,
+                    lastModEpochSec = System.currentTimeMillis() / 1000,
+                ),
+            )
+        }
+        if (error == null) loadContacts()
+        return error
+    }
+
+    /** Renames a contact on the node, preserving its route and coordinates. */
+    suspend fun renameContact(contactId: String, newName: String): String? {
+        if (newName.isBlank()) return "Enter a name"
+        val raw = rawContactById(contactId) ?: return "Unknown contact"
+        val error = write("Rename") {
+            client.commandSingle(
+                MeshCoreProtocol.encodeAddUpdateContact(
+                    publicKey = raw.publicKey,
+                    type = raw.type,
+                    flags = raw.flags,
+                    outPathLen = raw.outPathLen,
+                    outPath = raw.outPath,
+                    name = newName.trim(),
+                    lastAdvertEpochSec = raw.lastAdvertEpochSec,
+                    latE6 = raw.latE6,
+                    lonE6 = raw.lonE6,
+                    lastModEpochSec = System.currentTimeMillis() / 1000,
+                ),
+            )
+        }
+        if (error == null) loadContacts()
+        return error
+    }
+
+    /** Deletes a contact from the node and forgets it locally. */
+    suspend fun removeContact(contactId: String): String? {
+        val key = pubKeyOf(contactId) ?: return "Unknown contact"
+        val error = write("Remove contact") {
+            client.commandSingle(MeshCoreProtocol.encodeRemoveContact(key))
+        }
+        if (error == null) {
+            favoriteIds -= contactId
+            _contacts.update { it.filterNot { c -> c.id == contactId } }
+            _messages.update { it - contactId }
+            _rawContacts.update { it.filterNot { c -> contactConversationId(c.keyPrefix) == contactId } }
+            contactKeys.remove(contactId)
+            requestSave()
+        }
+        return error
+    }
+
+    /**
+     * A zero-hop ping: a trace addressed directly to the contact's own hash. If the
+     * node is in direct range it answers with its SNR; otherwise the trace times out.
+     */
+    suspend fun pingZeroHop(contactId: String): Result<MeshFrame.TraceData> {
+        val raw = rawContactById(contactId)
+            ?: return Result.failure(IllegalStateException("Unknown contact"))
+        val size = MeshCoreProtocol.PathHashMode.hashSizeBytes(_deviceInfo.value?.pathHashMode ?: 0)
+        val hash = raw.publicKey.copyOf(size)
+        // A direct neighbour answers almost immediately; 5s is plenty and keeps the
+        // "not in range" verdict snappy instead of the 30s a full path trace waits.
+        return traceRoute(hash, size, timeoutMs = PING_TIMEOUT_MS)
+    }
+
+    private fun onSendConfirmed(frame: MeshFrame.SendConfirmed) {
+        val ack = frame.ackCode
+        if (ack.size < 4) return
+        val code = (ack[0].toLong() and 0xFF) or ((ack[1].toLong() and 0xFF) shl 8) or
+            ((ack[2].toLong() and 0xFF) shl 16) or ((ack[3].toLong() and 0xFF) shl 24)
+        val sent = synchronized(pendingAcks) { pendingAcks.remove(code) } ?: return
+        updateMessage(sent.conversationId, sent.messageId) {
+            it.copy(deliveryState = DeliveryState.CONFIRMED)
+        }
+    }
+
     companion object {
         const val CHANNEL_PREFIX = "ch:"
         const val CONTACT_PREFIX = "c:"
@@ -1304,6 +1781,12 @@ class MeshRepository(
 
         /** The reference app keeps the last 500 packets, and clears them on restart. */
         const val MAX_LOGGED_PACKETS = 500
+
+        /** Coalesce a burst of message/contact updates into a single disk write. */
+        const val SAVE_DEBOUNCE_MS = 400L
+
+        /** Zero-hop ping timeout: a direct neighbour replies fast, so we don't wait long. */
+        const val PING_TIMEOUT_MS = 5_000L
 
         /**
          * The shareable contact link, per docs/qr_codes.md:
@@ -1359,12 +1842,22 @@ class MeshRepository(
     }
 }
 
+/** Our own node's map position, decoupled from the live [MeshFrame.SelfInfo] frame. */
+data class SelfPosition(val name: String, val latE6: Int, val lonE6: Int)
+
 internal fun MeshFrame.Contact.toContact(): Contact = Contact(
     id = MeshRepository.contactConversationId(keyPrefix),
     name = name.ifBlank { "(unnamed)" },
     type = MeshRepository.nodeTypeOf(type),
-    // int8_t: -1 means the node has no known route, so traffic floods.
-    route = if (outPathLen < 0) Route.Flood else Route.Hops(outPathLen),
+    // out_path_len is a packed path_len byte, not a raw count: the top two bits are the
+    // hash-size mode and the low six the hop count. 0xFF (OUT_PATH_UNKNOWN) means no route
+    // at all, so traffic floods; anything else decodes to a hop count, and a hop count of
+    // 0 -- e.g. 0x40, "2-byte hash mode, zero hops" -- is a direct route.
+    route = if ((outPathLen and 0xFF) == MeshCoreProtocol.PathInfo.DIRECT) {
+        Route.Flood
+    } else {
+        Route.Hops(MeshCoreProtocol.PathInfo.hops(outPathLen and 0xFF))
+    },
     // `lastmod`, not `last_advert_timestamp`. The firmware stamps lastmod from its own
     // RTC -- "update last heard time" -- while last_advert carries the timestamp the
     // *sender* wrote into its advert, and exists only for replay protection. Plenty of
@@ -1372,4 +1865,6 @@ internal fun MeshFrame.Contact.toContact(): Contact = Contact(
     // from two days in the future, which would read as "Last seen just now".
     lastSeenEpochMs = lastModEpochSec.takeIf { it > 0 }?.times(1000),
     hasLocation = latE6 != 0 || lonE6 != 0,
+    latE6 = latE6,
+    lonE6 = lonE6,
 )

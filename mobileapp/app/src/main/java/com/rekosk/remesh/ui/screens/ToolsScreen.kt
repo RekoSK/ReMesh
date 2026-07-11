@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 /** Where each working tool goes. The map-backed ones have nowhere to go yet. */
 data class ToolsNav(
     val onPathTrace: () -> Unit,
+    val onPathTraceMap: () -> Unit,
     val onPacketLog: () -> Unit,
     val onDiscoverNearby: () -> Unit,
     val onNoiseFloor: () -> Unit,
@@ -87,7 +88,7 @@ fun ToolsScreen(onBack: () -> Unit, nav: ToolsNav) {
                 icon = Icons.Filled.Map,
                 title = "Path trace  •  Using map",
                 subtitle = "Trace a path by picking repeaters on the map.",
-                enabled = false,
+                onClick = nav.onPathTraceMap,
             )
             ToolRow(
                 icon = Icons.Filled.Wifi,

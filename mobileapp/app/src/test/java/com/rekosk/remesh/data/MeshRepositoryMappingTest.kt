@@ -5,6 +5,7 @@ import com.rekosk.remesh.ble.MeshCoreProtocol
 import com.rekosk.remesh.ble.MeshFrame
 import com.rekosk.remesh.data.model.ChannelKind
 import com.rekosk.remesh.data.model.NodeType
+import com.rekosk.remesh.data.model.Route
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -45,6 +46,34 @@ class MeshRepositoryMappingTest {
         assertEquals(0, MeshCoreProtocol.PathInfo.hops(0xFF))
         assertEquals(4, MeshCoreProtocol.PathInfo.hops(4))
     }
+
+    @Test
+    fun `out_path_len is decoded as a packed path byte, not a raw hop count`() {
+        // 0xFF is OUT_PATH_UNKNOWN: no route, so traffic floods.
+        assertEquals(Route.Flood, contactWithOutPathLen(0xFF).toContact().route)
+        // 0x00: a plain direct route (0 hops).
+        assertEquals(Route.Hops(0), contactWithOutPathLen(0x00).toContact().route)
+        // 0x40 packs "2-byte hash mode, 0 hops" -- still direct, NOT 64 hops. This was
+        // the bug: a direct contact showed "64 hops" with 64 zero bytes.
+        assertEquals(Route.Hops(0), contactWithOutPathLen(0x40).toContact().route)
+        // 0x03 packs "1-byte hash mode, 3 hops".
+        assertEquals(Route.Hops(3), contactWithOutPathLen(0x03).toContact().route)
+        // 0x42 packs "2-byte hash mode, 2 hops".
+        assertEquals(Route.Hops(2), contactWithOutPathLen(0x42).toContact().route)
+    }
+
+    private fun contactWithOutPathLen(outPathLen: Int) = MeshFrame.Contact(
+        publicKey = ByteArray(MeshCoreProtocol.PUB_KEY_SIZE),
+        type = MeshCoreProtocol.AdvType.CHAT,
+        flags = 0,
+        outPathLen = outPathLen,
+        outPath = ByteArray(MeshCoreProtocol.MAX_PATH_SIZE),
+        name = "SK-KE-Test",
+        lastAdvertEpochSec = 0,
+        latE6 = 0,
+        lonE6 = 0,
+        lastModEpochSec = 0,
+    )
 
     @Test
     fun `channel kind is derived from the name and the key`() {

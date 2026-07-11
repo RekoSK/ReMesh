@@ -49,6 +49,20 @@ data class ResolvedRepeat(
 }
 
 /**
+ * One route an incoming message reached us by: its hops in path order (the hop
+ * nearest the sender first, the one that handed it to us last), names resolved.
+ */
+data class ResolvedRoute(
+    val hops: List<ResolvedRepeat>,
+    /** SNR we heard this copy at, in dB. */
+    val snr: Float,
+) {
+    /** The repeater that handed the packet to us -- the headline of the list row. */
+    val finalHop: ResolvedRepeat? get() = hops.lastOrNull()
+    val hopCount: Int get() = hops.size
+}
+
+/**
  * Matches [hashHex] against the leading bytes of every known contact's public key.
  *
  * Comparison is on the hex prefix rather than on bytes so it works whatever path

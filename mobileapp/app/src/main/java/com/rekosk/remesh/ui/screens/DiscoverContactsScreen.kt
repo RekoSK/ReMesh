@@ -17,6 +17,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -27,6 +28,9 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -50,9 +54,15 @@ fun DiscoverContactsScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     val isLoading by viewModel.isDiscovering.collectAsStateWithLifecycle()
     val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
     val pullState = rememberPullToRefreshState()
+    // True only while a refresh the user started by swiping is in flight, so the
+    // circular spinner is reserved for that and background refreshes show the bar.
+    var swipeRefresh by remember { mutableStateOf(false) }
 
     LaunchedEffect(isConnected) {
         if (isConnected) viewModel.refreshRecentAdverts()
+    }
+    LaunchedEffect(isLoading) {
+        if (!isLoading) swipeRefresh = false
     }
 
     Scaffold(
@@ -79,17 +89,33 @@ fun DiscoverContactsScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     ) { innerPadding ->
         PullToRefreshBox(
             isRefreshing = isLoading,
-            onRefresh = viewModel::refreshRecentAdverts,
+            onRefresh = {
+                swipeRefresh = true
+                viewModel.refreshRecentAdverts()
+            },
             state = pullState,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
             indicator = {
-                PullToRefreshDefaults.LoadingIndicator(
-                    state = pullState,
-                    isRefreshing = isLoading,
-                    modifier = Modifier.align(Alignment.TopCenter),
-                )
+                // The wavy "snake" bar shows for any active refresh — including the
+                // first, automatic one, where it is the *only* indicator.
+                if (isLoading) {
+                    LinearWavyProgressIndicator(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .fillMaxWidth(),
+                    )
+                }
+                // The circular spinner is added only for a manual swipe (shown on top
+                // of the bar), and while idle it doubles as the pull-to-refresh affordance.
+                if (swipeRefresh || !isLoading) {
+                    PullToRefreshDefaults.LoadingIndicator(
+                        state = pullState,
+                        isRefreshing = swipeRefresh && isLoading,
+                        modifier = Modifier.align(Alignment.TopCenter),
+                    )
+                }
             },
         ) {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -126,7 +152,12 @@ private fun AdvertRow(advert: RecentAdvert) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        NodeAvatar(type = advert.type, isBlocked = false)
+        NodeAvatar(
+            type = advert.type,
+            isBlocked = false,
+            name = advert.name,
+            colorSeed = advert.publicKey.joinToString("") { "%02x".format(it) },
+        )
         Spacer(Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(advert.name, style = MaterialTheme.typography.titleMedium)

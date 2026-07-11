@@ -61,7 +61,6 @@ import com.rekosk.remesh.ui.components.label
 fun ContactsScreen(
     viewModel: MeshViewModel,
     onContactClick: (Contact) -> Unit,
-    onOpenConnect: () -> Unit,
     overflow: OverflowNav,
     modifier: Modifier = Modifier,
 ) {
@@ -69,7 +68,6 @@ fun ContactsScreen(
     val total by viewModel.totalContactCount.collectAsStateWithLifecycle()
     val query by viewModel.query.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
-    val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
     val pullState = rememberPullToRefreshState()
 
     Scaffold(
@@ -90,8 +88,6 @@ fun ContactsScreen(
                     },
                     actions = {
                         MeshTopBarActions(
-                            isConnected = isConnected,
-                            onOpenConnect = onOpenConnect,
                             onAdvert = viewModel::sendAdvert,
                             selfContactUri = viewModel::selfContactUri,
                             overflow = overflow,
@@ -186,7 +182,13 @@ private fun ContactRow(contact: Contact, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        NodeAvatar(type = contact.type, isBlocked = contact.isBlocked)
+        NodeAvatar(
+            type = contact.type,
+            isBlocked = contact.isBlocked,
+            isFavorite = contact.isFavorite,
+            name = contact.name,
+            colorSeed = contact.id,
+        )
         Spacer(Modifier.width(16.dp))
 
         Column(modifier = Modifier.weight(1f)) {

@@ -300,6 +300,17 @@ class MeshCoreProtocolTest {
         assertEquals(24L, batt.usedKb)
         assertEquals(110L, batt.totalKb)
         assertEquals(21, batt.usedPercent())
+        // Legacy 11-byte reply carries no charge flag.
+        assertNull(batt.charging)
+    }
+
+    @Test
+    fun `battery frame reads the optional charge flag`() {
+        val charging = le(12).put(12).putShort(3900).putInt(24).putInt(110).put(1)
+        assertEquals(true, (MeshCoreProtocol.decode(charging.array()) as MeshFrame.Battery).charging)
+
+        val onBattery = le(12).put(12).putShort(3900).putInt(24).putInt(110).put(0)
+        assertEquals(false, (MeshCoreProtocol.decode(onBattery.array()) as MeshFrame.Battery).charging)
     }
 
     @Test

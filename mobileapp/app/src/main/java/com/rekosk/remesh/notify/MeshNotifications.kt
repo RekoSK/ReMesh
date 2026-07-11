@@ -112,7 +112,7 @@ object MeshNotifications {
         text: String,
     ) {
         val notification = NotificationCompat.Builder(context, ALERTS_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_message)
+            .setSmallIcon(R.drawable.ic_cell_tower)
             .setContentTitle(title)
             .setContentText(if (title == author) text else "$author: $text")
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -125,7 +125,7 @@ object MeshNotifications {
 
     fun postSimpleAlert(context: Context, id: Int, title: String, text: String) {
         val notification = NotificationCompat.Builder(context, ALERTS_CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_message)
+            .setSmallIcon(R.drawable.ic_cell_tower)
             .setContentTitle(title)
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))

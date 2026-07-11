@@ -122,13 +122,17 @@ object ConfigCodec {
     }
 
     /**
-     * `out_path_len` is int8: -1 means the node knows no route (exported as null),
-     * 0 means a direct route with an empty path (exported as ""), and anything
-     * larger is that many bytes of hex.
+     * `out_path_len` is a packed path_len byte, not a raw count: top two bits are the
+     * hash-size mode, low six the hop count. 0xFF means the node knows no route (exported
+     * as null); a zero hop count is a direct route (exported as ""); otherwise the path is
+     * `hopCount * hashSize` bytes of hex.
      */
     internal fun formatOutPath(outPathLen: Int, outPath: ByteArray): String? {
-        if (outPathLen < 0) return null
-        return outPath.take(outPathLen).joinToString("") { "%02x".format(it) }
+        val b = outPathLen and 0xFF
+        if (b == 0xFF) return null
+        val hopCount = b and 0x3F
+        val hashSize = (b shr 6) + 1
+        return outPath.take(hopCount * hashSize).joinToString("") { "%02x".format(it) }
     }
 
     fun encode(config: ConfigFile): String = json.encodeToString(

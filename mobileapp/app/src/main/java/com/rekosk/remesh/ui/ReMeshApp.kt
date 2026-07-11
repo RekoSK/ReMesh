@@ -3,9 +3,11 @@ package com.rekosk.remesh.ui
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Tag
@@ -37,15 +39,21 @@ import com.rekosk.remesh.ui.screens.ScanContactQrScreen
 import com.rekosk.remesh.ui.screens.ToolsNav
 import com.rekosk.remesh.ui.screens.ToolsScreen
 import com.rekosk.remesh.ui.screens.ChannelsScreen
+import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.screens.ChatScreen
+import com.rekosk.remesh.ui.screens.ContactDetailScreen
+import com.rekosk.remesh.ui.screens.SetRouteScreen
 import com.rekosk.remesh.ui.screens.ConnectScreen
 import com.rekosk.remesh.ui.screens.ContactsScreen
 import com.rekosk.remesh.ui.screens.CreatePrivateChannelScreen
 import com.rekosk.remesh.ui.screens.HeardRepeatsScreen
+import com.rekosk.remesh.ui.screens.MessageRouteScreen
+import com.rekosk.remesh.ui.screens.MessageRoutesScreen
 import com.rekosk.remesh.ui.screens.JoinHashtagChannelScreen
 import com.rekosk.remesh.ui.screens.JoinPrivateChannelScreen
 import com.rekosk.remesh.ui.screens.JoinPublicChannelScreen
 import com.rekosk.remesh.ui.screens.MapScreen
+import com.rekosk.remesh.ui.screens.MapTracePickerScreen
 import com.rekosk.remesh.ui.screens.ScanChannelQrScreen
 import com.rekosk.remesh.ui.screens.ShareChannelScreen
 import com.rekosk.remesh.ui.screens.SettingsNav
@@ -67,6 +75,8 @@ private const val ROUTE_CONTACTS = "contacts"
 private const val ROUTE_CHANNELS = "channels"
 private const val ROUTE_MAP = "map"
 private const val ROUTE_CHAT = "chat"
+private const val ROUTE_CONTACT_DETAIL = "contact"
+private const val ROUTE_SET_ROUTE = "set_route"
 private const val ROUTE_CONNECT = "connect"
 private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_SHARE_QR = "share_qr"
@@ -88,12 +98,16 @@ private const val ROUTE_JOIN_PUBLIC_CHANNEL = "channels/add/join_public"
 private const val ROUTE_JOIN_HASHTAG_CHANNEL = "channels/add/join_hashtag"
 private const val ROUTE_SCAN_CHANNEL_QR = "channels/add/scan"
 private const val ROUTE_HEARD_REPEATS = "heard_repeats"
+private const val ROUTE_MESSAGE_ROUTES = "message_routes"
+private const val ROUTE_MESSAGE_ROUTE = "message_route"
 private const val ROUTE_SHARE_CHANNEL = "channels/share"
 private const val ROUTE_ADD_CONTACT = "contacts/add"
 private const val ROUTE_SCAN_CONTACT_QR = "contacts/add/scan"
 private const val ROUTE_DISCOVER_CONTACTS = "contacts/discover"
 private const val ROUTE_TOOLS = "tools"
 private const val ROUTE_PATH_TRACE = "tools/path_trace"
+private const val ROUTE_MAP_TRACE = "tools/map_trace"
+private const val ROUTE_MAP_TRACE_RESULT = "tools/map_trace_result"
 private const val ROUTE_PACKET_LOG = "tools/packet_log"
 private const val ROUTE_DISCOVER_NEARBY = "tools/discover_nearby"
 private const val ROUTE_NOISE_FLOOR = "tools/noise_floor"
@@ -107,6 +121,7 @@ private enum class TopLevel(
     Contacts(ROUTE_CONTACTS, "Contacts", Icons.Filled.Groups, Icons.Outlined.Groups),
     Channels(ROUTE_CHANNELS, "Channels", Icons.Filled.Tag, Icons.Outlined.Tag),
     Map(ROUTE_MAP, "Map", Icons.Filled.Map, Icons.Outlined.Map),
+    Me(ROUTE_CONNECT, "Me", Icons.Filled.AccountCircle, Icons.Outlined.AccountCircle),
 }
 
 @Composable
@@ -170,32 +185,50 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                 ContactsScreen(
                     viewModel = viewModel,
                     overflow = overflow,
-                    onContactClick = { navController.navigate("$ROUTE_CHAT/${it.id}") },
-                    onOpenConnect = { navController.navigate(ROUTE_CONNECT) },
+                    // Chat contacts open a conversation; everything else (repeaters,
+                    // rooms, sensors) opens the detail screen -- they are not messaged.
+                    onContactClick = { contact ->
+                        if (contact.type == NodeType.CHAT) {
+                            navController.navigate("$ROUTE_CHAT/${contact.id}")
+                        } else {
+                            navController.navigate("$ROUTE_CONTACT_DETAIL/${contact.id}")
+                        }
+                    },
                 )
             }
             composable(ROUTE_CHANNELS) {
                 ChannelsScreen(
                     viewModel = viewModel,
                     overflow = overflow,
-                    onChannelClick = { navController.navigate("$ROUTE_CHAT/${it.id}") },
-                    onOpenConnect = { navController.navigate(ROUTE_CONNECT) },
+                    onOpenConversation = { navController.navigate("$ROUTE_CHAT/$it") },
                     onAddChannel = { navController.navigate(ROUTE_ADD_CHANNEL) },
-                    onShareChannel = { navController.navigate("$ROUTE_SHARE_CHANNEL/${it.index}") },
+                    onShareChannel = { navController.navigate("$ROUTE_SHARE_CHANNEL/$it") },
                 )
             }
             composable(ROUTE_MAP) {
                 MapScreen(
                     viewModel = viewModel,
                     overflow = overflow,
-                    onOpenConnect = { navController.navigate(ROUTE_CONNECT) },
+                    onOpenContact = { contactId ->
+                        navController.navigate("$ROUTE_CONTACT_DETAIL/$contactId")
+                    },
                 )
             }
             composable(ROUTE_CONNECT) {
+                // The "Me" tab: same node list, no back arrow. Opening an offline node
+                // jumps to Contacts so its saved data is right there.
                 ConnectScreen(
                     viewModel = viewModel,
-                    onBack = { navController.popBackStack() },
                     onOpenSettings = { navController.navigate(ROUTE_SETTINGS) },
+                    onNodeOpened = {
+                        navController.navigate(ROUTE_CONTACTS) {
+                            popUpTo(navController.graph.findStartDestination().id) {
+                                saveState = true
+                            }
+                            launchSingleTop = true
+                            restoreState = true
+                        }
+                    },
                 )
             }
             composable(ROUTE_SETTINGS) {
@@ -245,6 +278,27 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onOpenHeardRepeats = { messageId ->
                         navController.navigate("$ROUTE_HEARD_REPEATS/$conversationId/$messageId")
                     },
+                    onShowMessageRoutes = { messageId ->
+                        navController.navigate("$ROUTE_MESSAGE_ROUTES/$conversationId/$messageId")
+                    },
+                    onOpenContact = { navController.navigate("$ROUTE_CONTACT_DETAIL/$conversationId") },
+                )
+            }
+            composable("$ROUTE_CONTACT_DETAIL/{contactId}") { entry ->
+                val id = entry.arguments?.getString("contactId").orEmpty()
+                ContactDetailScreen(
+                    viewModel = viewModel,
+                    contactId = id,
+                    onBack = { navController.popBackStack() },
+                    onEditRoute = { navController.navigate("$ROUTE_SET_ROUTE/$id") },
+                    onSendMessage = { navController.navigate("$ROUTE_CHAT/$id") },
+                )
+            }
+            composable("$ROUTE_SET_ROUTE/{contactId}") { entry ->
+                SetRouteScreen(
+                    viewModel = viewModel,
+                    contactId = entry.arguments?.getString("contactId").orEmpty(),
+                    onBack = { navController.popBackStack() },
                 )
             }
             composable("$ROUTE_HEARD_REPEATS/{conversationId}/{messageId}") { entry ->
@@ -252,6 +306,31 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     viewModel = viewModel,
                     conversationId = entry.arguments?.getString("conversationId").orEmpty(),
                     messageId = entry.arguments?.getString("messageId").orEmpty(),
+                    onBack = back,
+                )
+            }
+            composable("$ROUTE_MESSAGE_ROUTES/{conversationId}/{messageId}") { entry ->
+                val cid = entry.arguments?.getString("conversationId").orEmpty()
+                val mid = entry.arguments?.getString("messageId").orEmpty()
+                MessageRoutesScreen(
+                    viewModel = viewModel,
+                    conversationId = cid,
+                    messageId = mid,
+                    onOpenRoute = { routeIndex ->
+                        navController.navigate("$ROUTE_MESSAGE_ROUTE/$cid/$mid/$routeIndex")
+                    },
+                    onBack = back,
+                )
+            }
+            composable("$ROUTE_MESSAGE_ROUTE/{conversationId}/{messageId}/{routeIndex}") { entry ->
+                MessageRouteScreen(
+                    viewModel = viewModel,
+                    conversationId = entry.arguments?.getString("conversationId").orEmpty(),
+                    messageId = entry.arguments?.getString("messageId").orEmpty(),
+                    routeIndex = entry.arguments?.getString("routeIndex")?.toIntOrNull() ?: 0,
+                    onOpenContact = { contactId ->
+                        navController.navigate("$ROUTE_CONTACT_DETAIL/$contactId")
+                    },
                     onBack = back,
                 )
             }
@@ -306,6 +385,10 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onBack = back,
                     nav = ToolsNav(
                         onPathTrace = { navController.navigate(ROUTE_PATH_TRACE) },
+                        onPathTraceMap = {
+                            viewModel.clearTracePicks()
+                            navController.navigate(ROUTE_MAP_TRACE)
+                        },
                         onPacketLog = { navController.navigate(ROUTE_PACKET_LOG) },
                         onDiscoverNearby = { navController.navigate(ROUTE_DISCOVER_NEARBY) },
                         onNoiseFloor = { navController.navigate(ROUTE_NOISE_FLOOR) },
@@ -313,6 +396,21 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                 )
             }
             composable(ROUTE_PATH_TRACE) { PathTraceScreen(viewModel, back) }
+            composable(ROUTE_MAP_TRACE) {
+                MapTracePickerScreen(
+                    viewModel = viewModel,
+                    onBack = back,
+                    onConfirm = { navController.navigate(ROUTE_MAP_TRACE_RESULT) },
+                )
+            }
+            composable(ROUTE_MAP_TRACE_RESULT) {
+                PathTraceScreen(
+                    viewModel = viewModel,
+                    onBack = back,
+                    // The map-backed variant; its FAB returns to the picker we came from.
+                    onOpenMapPicker = { navController.popBackStack() },
+                )
+            }
             composable(ROUTE_PACKET_LOG) { PacketLogScreen(viewModel, back) }
             composable(ROUTE_DISCOVER_NEARBY) { DiscoverNearbyScreen(viewModel, back) }
             composable(ROUTE_NOISE_FLOOR) { NoiseFloorScreen(viewModel, back) }

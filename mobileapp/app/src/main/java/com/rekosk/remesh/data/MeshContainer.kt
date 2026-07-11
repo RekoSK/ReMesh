@@ -29,6 +29,7 @@ object MeshContainer {
             repository ?: MeshRepository(
                 client = MeshCoreBleClient(context.applicationContext),
                 scope = scope,
+                nodeStorage = NodeStorage(context.applicationContext),
             ).also { repository = it }
         }
 

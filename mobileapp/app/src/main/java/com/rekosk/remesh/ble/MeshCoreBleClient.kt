@@ -84,6 +84,13 @@ class MeshCoreBleClient(private val context: Context) {
     val devices: StateFlow<List<DiscoveredDevice>> = _devices.asStateFlow()
 
     /**
+     * The live RSSI of the BLE link to the connected node, in dBm. Refreshed each
+     * time [readConnectionRssi] fires; null while disconnected or before the first read.
+     */
+    private val _connectionRssi = MutableStateFlow<Int?>(null)
+    val connectionRssi: StateFlow<Int?> = _connectionRssi.asStateFlow()
+
+    /**
      * Asynchronous frames from the node (adverts, MSG_WAITING, acks).
      *
      * Generously buffered because LOG_RX_DATA carries *every* packet the radio hears,
@@ -173,6 +180,15 @@ class MeshCoreBleClient(private val context: Context) {
     fun stopScan() {
         runCatching { adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
         if (_state.value is ConnectionState.Scanning) _state.value = ConnectionState.Disconnected
+    }
+
+    /**
+     * Requests a fresh RSSI reading for the active connection. The result arrives
+     * asynchronously in [onReadRemoteRssi] and lands in [connectionRssi]. No-op when
+     * not connected.
+     */
+    fun readConnectionRssi() {
+        runCatching { gatt?.readRemoteRssi() }
     }
 
     // ---------------- bonding ----------------
@@ -267,10 +283,15 @@ class MeshCoreBleClient(private val context: Context) {
                 notificationsEnabled?.complete(false)
                 pending?.result?.completeExceptionally(MeshBleException("Disconnected"))
                 pending = null
+                _connectionRssi.value = null
                 if (_state.value is ConnectionState.Ready) {
                     _state.value = ConnectionState.Disconnected
                 }
             }
+        }
+
+        override fun onReadRemoteRssi(g: BluetoothGatt, rssi: Int, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) _connectionRssi.value = rssi
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {

@@ -41,15 +41,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.rekosk.remesh.data.model.MeshMessage
+import com.rekosk.remesh.ui.components.SignalBars
 import com.rekosk.remesh.ui.components.formatMessageTime
 
 /**
  * The sheet a long press opens. What it offers depends on who wrote the message:
  * our own messages can be inspected for which repeaters carried them, everybody
- * else's can be replied to.
- *
- * "Show message routes" is deliberately inert for now -- the node reports the path
- * a packet took, but nothing renders it yet.
+ * else's can be replied to and inspected for the route each copy took to reach us.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +56,7 @@ fun MessageActionsSheet(
     onDismiss: () -> Unit,
     onReply: () -> Unit,
     onHeardRepeats: () -> Unit,
+    onShowMessageRoutes: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -93,8 +92,7 @@ fun MessageActionsSheet(
                     ActionRow(
                         icon = Icons.Filled.Route,
                         label = "Show message routes",
-                        enabled = false,
-                        onClick = {},
+                        onClick = onShowMessageRoutes,
                     )
                 }
 
@@ -171,7 +169,13 @@ private fun MessagePreview(message: MeshMessage) {
                 DetailLine("Sent", formatMessageTime(message.timestampEpochMs))
                 message.receivedEpochMs?.let { DetailLine("Received", formatMessageTime(it)) }
                 message.pathHashSizeBytes?.let { DetailLine("Path Hash Size", "$it-byte") }
-                message.snr?.let { DetailLine("SNR", formatSnr(it)) }
+                message.snr?.let {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        SignalBars(it)
+                        Spacer(Modifier.width(6.dp))
+                        DetailLine("SNR", formatSnr(it))
+                    }
+                }
                 DetailLine(
                     label = "Hops",
                     value = if (message.isDirectRoute) "Direct" else "${message.hopCount}",

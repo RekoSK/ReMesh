@@ -20,6 +20,10 @@
     <!-- Only for scanning a channel's QR code; the rest of the app works without it. -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- The Node Map downloads and caches OpenTopoMap tiles via osmdroid. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="true" />

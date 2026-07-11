@@ -10,6 +10,8 @@ import com.rekosk.remesh.ble.MeshCoreProtocol
 import com.rekosk.remesh.ble.MeshFrame
 import com.rekosk.remesh.data.RepeaterName
 import com.rekosk.remesh.data.ResolvedRepeat
+import com.rekosk.remesh.data.ResolvedRoute
+import com.rekosk.remesh.data.model.RepeaterContactRef
 import com.rekosk.remesh.data.SharedContact
 import com.rekosk.remesh.data.channelUri
 import com.rekosk.remesh.data.parseContactUri
@@ -22,11 +24,16 @@ import com.rekosk.remesh.data.ExperimentalPrefs
 import com.rekosk.remesh.data.MeshContainer
 import com.rekosk.remesh.data.MessagePrefs
 import com.rekosk.remesh.data.NotificationPrefs
+import com.rekosk.remesh.data.SavedNodeSummary
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.Contact
+import com.rekosk.remesh.data.model.ContactExtras
+import com.rekosk.remesh.data.model.ConversationSummary
 import com.rekosk.remesh.data.model.LoggedPacket
 import com.rekosk.remesh.data.model.MeshMessage
 import com.rekosk.remesh.data.model.NearbyNode
+import com.rekosk.remesh.data.model.NodePosition
+import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.RecentAdvert
 import com.rekosk.remesh.data.model.TraceHop
 import com.rekosk.remesh.data.model.NodeSettings
@@ -39,9 +46,25 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.pow
 
 /** How many noise-floor readings the live chart keeps on screen. */
 private const val NOISE_FLOOR_SAMPLES = 60
+
+/** Marker id for our own node on the map; the "c:"-prefixed contact ids never collide. */
+const val SELF_NODE_ID = "self"
+
+/** Outcome of a zero-hop ping, shown in the ping dialog. */
+data class PingResult(val success: Boolean, val message: String)
+
+/** A completed path trace: the hops plus how long the round trip took. */
+data class TraceResult(
+    val hops: List<TraceHop>,
+    val elapsedMs: Long,
+    /** How well our own node heard the returning trace, in dB. */
+    val finalSnr: Float,
+    val selfName: String,
+)
 
 class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -55,6 +78,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     val isRadioConnected: StateFlow<Boolean> = repository.isRadioConnected
     val connectionState: StateFlow<ConnectionState> = repository.connectionState
     val devices: StateFlow<List<DiscoveredDevice>> = repository.devices
+    val connectionRssi: StateFlow<Int?> = repository.connectionRssi
     val lastError: StateFlow<String?> = repository.lastError
     val selfName: StateFlow<String?> = repository.selfName
     val selfInfo: StateFlow<MeshFrame.SelfInfo?> = repository.selfInfo
@@ -63,10 +87,57 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     val channels: StateFlow<List<Channel>> = repository.channels
 
+    /** Channels plus active DM threads, with unread counts, for the messaging list. */
+    val conversations: StateFlow<List<ConversationSummary>> = repository.conversations
+
+    /** Clears a conversation's unread badge. Called when its chat screen opens. */
+    fun markRead(conversationId: String) = repository.markConversationRead(conversationId)
+
     val contacts: StateFlow<List<Contact>> =
         combine(repository.contacts, _query) { contacts, query ->
             if (query.isBlank()) contacts
             else contacts.filter { it.name.contains(query, ignoreCase = true) }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Unfiltered contacts, for pickers that must ignore the search box. */
+    val allContacts: StateFlow<List<Contact>> = repository.contacts
+
+    /**
+     * Every node we can place on the map: our own node (when it has a position) plus
+     * every contact whose last advert carried coordinates. Both are read from the
+     * *persisted* domain state, so the map still works when the companion is offline.
+     * A 0/0 fix means "unknown", so those are dropped rather than pinned off Africa.
+     */
+    val nodePositions: StateFlow<List<NodePosition>> =
+        combine(repository.contacts, repository.selfPosition) { contacts, self ->
+            buildList {
+                self?.takeIf { it.latE6 != 0 || it.lonE6 != 0 }?.let {
+                    add(
+                        NodePosition(
+                            id = SELF_NODE_ID,
+                            name = it.name,
+                            type = NodeType.CHAT,
+                            latitude = it.latE6 / 1e6,
+                            longitude = it.lonE6 / 1e6,
+                            isSelf = true,
+                        )
+                    )
+                }
+                contacts.forEach { c ->
+                    if (c.latE6 != 0 || c.lonE6 != 0) {
+                        add(
+                            NodePosition(
+                                id = c.id,
+                                name = c.name,
+                                type = c.type,
+                                latitude = c.latE6 / 1e6,
+                                longitude = c.lonE6 / 1e6,
+                                lastSeenEpochMs = c.lastSeenEpochMs,
+                            )
+                        )
+                    }
+                }
+            }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val totalContactCount: StateFlow<Int> =
@@ -80,6 +151,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startScan() = repository.startScan()
     fun stopScan() = repository.stopScan()
+    fun readConnectionRssi() = repository.readConnectionRssi()
     fun clearError() = repository.clearError()
 
     fun connect(address: String) {
@@ -87,6 +159,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() = repository.disconnect()
+
+    /** Nodes with saved data, for the connect screen's offline section. */
+    val savedNodes: StateFlow<List<SavedNodeSummary>> = repository.savedNodes
+
+    /** Opens a saved node's stored data for offline reading. Ignored while connected. */
+    fun openSavedNode(key: String) = repository.openSavedNode(key)
 
     /** Read-only refresh: pull contacts and queued messages. Transmits nothing. */
     fun sync() {
@@ -269,6 +347,26 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** One entry per overheard copy of an incoming [messageId], hops resolved to names. */
+    fun messageRoutes(conversationId: String, messageId: String): List<ResolvedRoute> {
+        val message = repository.messages.value[conversationId]
+            ?.firstOrNull { it.id == messageId }
+            ?: return emptyList()
+        val contacts = repository.rawContacts.value
+        return message.routes.map { route ->
+            ResolvedRoute(
+                hops = route.pathHashesHex.map { hash ->
+                    ResolvedRepeat(hash, resolveRepeaterName(hash, contacts), route.snr, route.rssi)
+                },
+                snr = route.snr,
+            )
+        }
+    }
+
+    /** Known contacts whose key starts with a route hop's [hashHex]; the tap targets. */
+    fun repeaterContactsForHash(hashHex: String): List<RepeaterContactRef> =
+        repository.contactsMatchingHash(hashHex)
+
     // ---------------- adding channels ----------------
 
     private val _isAddingChannel = MutableStateFlow(false)
@@ -357,34 +455,162 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     /** Reads a `meshcore://contact/add` link out of the clipboard, if there is one. */
     fun parseContactLink(text: String): SharedContact? = parseContactUri(text)
 
+    // ---------------- contact detail ----------------
+
+    /** Live view of a single contact, for its detail screen. */
+    fun contactFlow(id: String): StateFlow<Contact?> =
+        repository.contacts
+            .map { list -> list.firstOrNull { it.id == id } }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), repository.contactById(id))
+
+    /** The fields the list model drops: full key, coordinates, distance, current path. */
+    fun contactExtras(id: String): ContactExtras? {
+        val raw = repository.rawContactById(id) ?: return null
+        val self = repository.selfInfo.value
+        val lat = if (raw.latE6 != 0 || raw.lonE6 != 0) raw.latE6 / 1e6 else null
+        val lon = if (raw.latE6 != 0 || raw.lonE6 != 0) raw.lonE6 / 1e6 else null
+        val distance = if (lat != null && lon != null && self != null &&
+            (self.latE6 != 0 || self.lonE6 != 0)
+        ) {
+            haversineKm(self.latE6 / 1e6, self.lonE6 / 1e6, lat, lon)
+        } else {
+            null
+        }
+        // out_path_len packs a hash-size mode and a hop count (see toContact); the real
+        // route is hops * hashSize bytes, not the raw byte. 0xFF means no route (flood).
+        val outPathHex = when {
+            (raw.outPathLen and 0xFF) == MeshCoreProtocol.PathInfo.DIRECT -> null
+            else -> {
+                val byteLen = MeshCoreProtocol.PathInfo.hops(raw.outPathLen and 0xFF) *
+                    MeshCoreProtocol.PathInfo.hashSizeBytes(raw.outPathLen and 0xFF)
+                raw.outPath.take(byteLen).joinToString("") { "%02x".format(it) }
+            }
+        }
+        return ContactExtras(
+            publicKeyHex = raw.publicKey.joinToString("") { "%02x".format(it) },
+            latitude = lat,
+            longitude = lon,
+            distanceKm = distance,
+            lastAdvertEpochMs = raw.lastAdvertEpochSec.takeIf { it > 0 }?.times(1000),
+            outPathHex = outPathHex,
+            pathHashSizeBytes = pathHashSizeBytes(),
+        )
+    }
+
+    fun setFavorite(contactId: String, favorite: Boolean) =
+        repository.setFavorite(contactId, favorite)
+
+    fun resetContactRoute(contactId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.resetPath(contactId)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
+    /** [hashesHex] is repeater hashes, comma-separated or joined; empty = zero-hop direct. */
+    fun setContactRoute(contactId: String, hashesHex: String, onResult: (String?) -> Unit) {
+        val clean = sanitizeHex(hashesHex)
+        val path = if (clean.isEmpty()) {
+            ByteArray(0)
+        } else {
+            runCatching { with(ChannelCrypto) { clean.decodeHex() } }.getOrNull()
+                ?: return onResult("Enter whole repeater hashes in hex")
+        }
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.setOutPath(contactId, path)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
+    /** The path the last advert from this contact took to reach us. [onResult] gets
+     *  "Direct", the hash bytes, or null when we hold no record. */
+    fun inboundPath(contactId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val advert = repository.advertPathFor(contactId)
+            onResult(
+                advert?.let {
+                    if (it.hops == 0) "Direct"
+                    else it.path.joinToString(" ") { b -> "%02X".format(b) }
+                },
+            )
+        }
+    }
+
+    fun renameContact(contactId: String, newName: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.renameContact(contactId, newName)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
+    fun removeContact(contactId: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.removeContact(contactId)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
+    /** `meshcore://contact/add?...` for a contact we hold, or null if unknown. */
+    fun contactShareUri(contactId: String): String? {
+        val raw = repository.rawContactById(contactId) ?: return null
+        return com.rekosk.remesh.data.MeshRepository.contactUri(raw.name, raw.publicKey, raw.type)
+    }
+
+    /** Fires a zero-hop ping; [onResult] gets a human-readable outcome line. */
+    fun pingZeroHop(contactId: String, onResult: (PingResult) -> Unit) {
+        viewModelScope.launch {
+            repository.pingZeroHop(contactId)
+                .onSuccess { onResult(PingResult(true, formatPing(it))) }
+                .onFailure { onResult(PingResult(false, it.message ?: "No response")) }
+        }
+    }
+
+    private fun formatPing(data: MeshFrame.TraceData): String {
+        val theyHeardUs = data.hopSnrs.firstOrNull()
+        val builder = StringBuilder("Reachable directly")
+        theyHeardUs?.let { builder.append("\nThey heard us at ${"%.2f".format(it)} dB") }
+        builder.append("\nWe heard the reply at ${"%.2f".format(data.finalSnr)} dB")
+        return builder.toString()
+    }
+
+    /** Keeps only hex digits, so a user can type "aa,bb, cc" and mean "aabbcc". */
+    private fun sanitizeHex(input: String): String =
+        input.filter { it in "0123456789abcdefABCDEF" }
+
+    private fun haversineKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2).pow(2) +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) * Math.sin(dLon / 2).pow(2)
+        return r * 2 * Math.asin(Math.sqrt(a))
+    }
+
     // ---------------- tools ----------------
 
     val packetLog: StateFlow<List<LoggedPacket>> = repository.packetLog
 
     fun clearPacketLog() = repository.clearPacketLog()
 
-    private val _recentAdverts = MutableStateFlow<List<RecentAdvert>>(emptyList())
-    val recentAdverts: StateFlow<List<RecentAdvert>> = _recentAdverts.asStateFlow()
+    /** Accumulated across refreshes and persisted per node; see the repository. */
+    val recentAdverts: StateFlow<List<RecentAdvert>> = repository.recentAdverts
 
     private val _isDiscovering = MutableStateFlow(false)
     val isDiscovering: StateFlow<Boolean> = _isDiscovering.asStateFlow()
 
-    /**
-     * Walks the node's advert table. Read-only: nothing is transmitted.
-     *
-     * Results accumulate across refreshes. The node's table holds only the last 16
-     * adverts and is lost when it reboots, so a refresh that no longer sees a node
-     * does not mean its advert never arrived -- only that it has aged out.
-     */
+    /** Walks the node's advert table. Read-only: nothing is transmitted. */
     fun refreshRecentAdverts() {
         viewModelScope.launch {
             _isDiscovering.value = true
-            val fresh = repository.recentAdverts()
-            _recentAdverts.update { existing ->
-                val byKey = existing.associateBy { it.publicKey.toList() }.toMutableMap()
-                fresh.forEach { byKey[it.publicKey.toList()] = it }
-                byKey.values.sortedByDescending { it.receivedEpochMs }
-            }
+            repository.refreshRecentAdverts()
             _isDiscovering.value = false
         }
     }
@@ -431,20 +657,38 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         _noiseFloor.value = emptyList()
     }
 
-    private val _trace = MutableStateFlow<List<TraceHop>?>(null)
+    private val _trace = MutableStateFlow<TraceResult?>(null)
 
     /** The last completed trace, or null before one has run. */
-    val trace: StateFlow<List<TraceHop>?> = _trace.asStateFlow()
+    val trace: StateFlow<TraceResult?> = _trace.asStateFlow()
 
     private val _isTracing = MutableStateFlow(false)
     val isTracing: StateFlow<Boolean> = _isTracing.asStateFlow()
+
+    /**
+     * Repeaters the user has picked on the map, in tap order, as contact ids. Shared
+     * between the map trace-picker and the Path trace screen so the two can hand the
+     * selection back and forth; the path hex is derived from these at the chosen size.
+     */
+    private val _tracePicks = MutableStateFlow<List<String>>(emptyList())
+    val tracePicks: StateFlow<List<String>> = _tracePicks.asStateFlow()
+
+    /** Adds a repeater to the trace path, or removes it if already picked. */
+    fun toggleTracePick(contactId: String) {
+        _tracePicks.update { if (contactId in it) it - contactId else it + contactId }
+    }
+
+    fun clearTracePicks() {
+        _tracePicks.value = emptyList()
+    }
 
     /**
      * Traces the route through [hashesHex], a concatenation of repeater hashes.
      * [onError] fires when no repeater answers, which is the usual failure.
      */
     fun traceRoute(hashesHex: String, hashSizeBytes: Int, onError: (String) -> Unit) {
-        val hashes = runCatching { with(ChannelCrypto) { hashesHex.decodeHex() } }.getOrNull()
+        val hashes = runCatching { with(ChannelCrypto) { sanitizeHex(hashesHex).decodeHex() } }
+            .getOrNull()
         if (hashes == null || hashes.isEmpty() || hashes.size % hashSizeBytes != 0) {
             onError("Enter whole repeater hashes, ${hashSizeBytes * 2} hex characters each")
             return
@@ -452,8 +696,16 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isTracing.value = true
             _trace.value = null
+            val started = System.currentTimeMillis()
             repository.traceRoute(hashes, hashSizeBytes)
-                .onSuccess { _trace.value = toTraceHops(it) }
+                .onSuccess {
+                    _trace.value = TraceResult(
+                        hops = toTraceHops(it),
+                        elapsedMs = System.currentTimeMillis() - started,
+                        finalSnr = it.finalSnr,
+                        selfName = repository.selfName.value ?: "This node",
+                    )
+                }
                 .onFailure { onError(it.message ?: "The trace did not come back") }
             _isTracing.value = false
         }
@@ -463,10 +715,16 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         val contacts = repository.rawContacts.value
         return (0 until data.hops).map { index ->
             val hashHex = data.hashAt(index).joinToString("") { "%02X".format(it) }
+            val resolved = resolveRepeaterName(hashHex, contacts)
             TraceHop(
                 hashHex = hashHex,
-                name = (resolveRepeaterName(hashHex, contacts) as? RepeaterName.Known)?.name,
+                name = (resolved as? RepeaterName.Known)?.name,
                 snr = data.hopSnrs[index],
+                candidates = when (resolved) {
+                    is RepeaterName.Known -> listOf(resolved.name)
+                    is RepeaterName.Duplicated -> resolved.names
+                    is RepeaterName.Unknown -> emptyList()
+                },
             )
         }
     }

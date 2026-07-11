@@ -6,9 +6,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.MoreVert
@@ -40,14 +38,13 @@ data class OverflowNav(
 
 /**
  * The action row shared by Contacts, Channels and Map, so the three top bars
- * never drift apart. Left to right: Bluetooth, Advert, overflow.
+ * never drift apart. Left to right: Advert, overflow.
  *
+ * Connecting to a node lives in the "Me" bottom-bar tab, not up here.
  * There is deliberately no refresh button -- refreshing is pull-to-refresh.
  */
 @Composable
 fun MeshTopBarActions(
-    isConnected: Boolean,
-    onOpenConnect: () -> Unit,
     onAdvert: (flood: Boolean) -> Unit,
     selfContactUri: () -> String?,
     overflow: OverflowNav,
@@ -55,13 +52,6 @@ fun MeshTopBarActions(
     val context = LocalContext.current
     var advertMenuOpen by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
-
-    IconButton(onClick = onOpenConnect) {
-        Icon(
-            imageVector = if (isConnected) Icons.Filled.Bluetooth else Icons.Filled.BluetoothDisabled,
-            contentDescription = if (isConnected) "Radio connected" else "Radio disconnected",
-        )
-    }
 
     Box {
         IconButton(onClick = { advertMenuOpen = true }) {
