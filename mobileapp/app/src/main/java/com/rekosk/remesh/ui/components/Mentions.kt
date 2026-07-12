@@ -243,13 +243,15 @@ fun MentionChip(name: String, color: Color, textStyle: TextStyle) {
         modifier = Modifier
             .fillMaxSize()
             .clip(shape)
-            .background(color),
+            // The soft translucent tint of an avatar's background, so a chip reads as a
+            // little PFP badge rather than a bold solid pill.
+            .background(color.copy(alpha = 0.22f)),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = name,
             style = textStyle,
-            color = onColorFor(color),
+            color = color,
             maxLines = 1,
             overflow = TextOverflow.Clip,
         )
@@ -343,7 +345,8 @@ class MentionVisualTransformation(
                 val base = colorForName(name)
                 origToTrans[start] = ti
                 origToTrans[start + 1] = ti
-                builder.pushStyle(SpanStyle(background = base.copy(alpha = 0.30f), color = onColorFor(base)))
+                // Match the message chip: translucent PFP-background tint, coloured name.
+                builder.pushStyle(SpanStyle(background = base.copy(alpha = 0.28f), color = base))
                 for (k in name.indices) {
                     origToTrans[start + 2 + k] = ti
                     emit(name[k], start + 2 + k)
