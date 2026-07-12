@@ -397,7 +397,7 @@ private fun Bubble(message: MeshMessage, selfName: String?, colorForName: (Strin
 @Composable
 private fun MessageFooter(message: MeshMessage, showHops: Boolean, showHashSize: Boolean) {
     if (message.isOutgoing) {
-        DeliveryTicks(message.deliveryState)
+        DeliveryTicks(message.deliveryState, message.heardRepeats.size)
         return
     }
     Text(
@@ -425,7 +425,7 @@ internal fun incomingFooterText(
 }.joinToString(" • ")
 
 @Composable
-private fun DeliveryTicks(state: DeliveryState) {
+private fun DeliveryTicks(state: DeliveryState, repeaterCount: Int) {
     if (state == DeliveryState.PENDING) return
     val tint = MaterialTheme.colorScheme.onSurfaceVariant
     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -449,6 +449,14 @@ private fun DeliveryTicks(state: DeliveryState) {
                     .size(14.dp)
                     .offset(x = (-6).dp),
             )
+            // "✅✅ • 3": how many distinct repeaters were overheard forwarding it.
+            if (repeaterCount > 0) {
+                Text(
+                    text = "• $repeaterCount",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint,
+                )
+            }
         }
     }
 }
