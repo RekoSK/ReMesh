@@ -74,6 +74,10 @@ data class PersistedCoveragePoint(
     val lonE6: Int,
     val colorIndex: Int,
     val enabled: Boolean = true,
+    val txPowerDbm: Double? = null,
+    val freqMhz: Double? = null,
+    val antennaM: Double? = null,
+    val rxSensitivityDbm: Double? = null,
 )
 
 @Serializable
@@ -256,10 +260,16 @@ fun MeshMessage.toPersisted(): PersistedMessage = PersistedMessage(
 )
 
 fun CoveragePoint.toPersisted(): PersistedCoveragePoint =
-    PersistedCoveragePoint(id, label, latE6, lonE6, colorIndex, enabled)
+    PersistedCoveragePoint(
+        id, label, latE6, lonE6, colorIndex, enabled,
+        txPowerDbm, freqMhz, antennaM, rxSensitivityDbm,
+    )
 
 fun PersistedCoveragePoint.toDomain(): CoveragePoint =
-    CoveragePoint(id, label, latE6, lonE6, colorIndex, enabled)
+    CoveragePoint(
+        id, label, latE6, lonE6, colorIndex, enabled,
+        txPowerDbm, freqMhz, antennaM, rxSensitivityDbm,
+    )
 
 private fun hexToBytes(hex: String): ByteArray =
     ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }

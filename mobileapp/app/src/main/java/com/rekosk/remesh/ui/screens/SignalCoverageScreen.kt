@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -56,6 +59,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -65,13 +69,16 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.rekosk.remesh.R
+import com.rekosk.remesh.data.coverage.CoverageDefaults
 import com.rekosk.remesh.data.coverage.CoverageResult
+import com.rekosk.remesh.data.coverage.RadioParams
 import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.MeshViewModel
 import com.rekosk.remesh.ui.components.PALETTE_SIZE
 import com.rekosk.remesh.ui.components.avatarColorByIndex
 import com.rekosk.remesh.ui.components.color
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -149,18 +156,21 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     }
     val centered = remember { booleanArrayOf(false) }
 
-    // One compute per point, re-run when its position/colour/enabled changes.
+    // One compute per point, re-run when its position/colour/enabled/radio params change.
+    // The short delay coalesces rapid edits (typing in the parameter fields) into one compute.
     points.forEach { p ->
         key(p.id) {
-            LaunchedEffect(p.latE6, p.lonE6, p.colorIndex, p.enabled) {
+            LaunchedEffect(
+                p.latE6, p.lonE6, p.colorIndex, p.enabled,
+                p.txPowerDbm, p.freqMhz, p.antennaM, p.rxSensitivityDbm,
+            ) {
                 if (!p.enabled) {
                     results.remove(p.id)
                     return@LaunchedEffect
                 }
+                delay(700)
                 computing[p.id] = true
-                val res = viewModel.computeCoverage(
-                    p.latE6, p.lonE6, avatarColorByIndex(p.colorIndex, dark).toArgb(),
-                )
+                val res = viewModel.computeCoverage(p, avatarColorByIndex(p.colorIndex, dark).toArgb())
                 computing[p.id] = false
                 if (res != null) results[p.id] = res
             }
@@ -220,11 +230,13 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                             },
                         )
                     }
-                    // Coverage-point markers.
+                    // Coverage-point markers, in the same tonal wash the contact avatars use.
                     points.filter { it.enabled }.forEach { p ->
                         val argb = avatarColorByIndex(p.colorIndex, dark).toArgb()
+                        val glyph = p.label.removePrefix("Point").trim().take(1)
+                            .ifEmpty { p.label.take(1) }.uppercase()
                         val art = nodeMarkerBitmap(
-                            view, p.label, argb, p.label.take(1).uppercase(), null, tonal = false, backingArgb,
+                            view, p.label, argb, glyph, null, tonal = true, backingArgb,
                         )
                         view.overlays.add(
                             Marker(view).apply {
@@ -248,10 +260,13 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                                     setAnchor(0.5f, art.anchorV)
                                     infoWindow = null
                                     setOnMarkerClickListener { _, _ ->
-                                        if (repeaterResults[node.id] == null && node.id !in computingRepeaters) {
+                                        // Tap toggles this repeater's theoretical coverage.
+                                        if (repeaterResults.remove(node.id) == null &&
+                                            node.id !in computingRepeaters
+                                        ) {
                                             computingRepeaters.add(node.id)
                                             scope.launch {
-                                                val res = viewModel.computeCoverage(
+                                                val res = viewModel.computeRepeaterCoverage(
                                                     (node.latitude * 1e6).toInt(),
                                                     (node.longitude * 1e6).toInt(),
                                                     repeaterArgb,
@@ -285,7 +300,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                     "toggle repeaters to check their coverage.",
             )
 
-            if (computing.values.any { it }) {
+            if (computing.values.any { it } || computingRepeaters.isNotEmpty()) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -304,8 +319,12 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
         ManagePointsSheet(
             points = points,
             dark = dark,
+            defaults = viewModel.defaultRadioParams(),
             onToggle = { id, on -> viewModel.updateCoveragePoint(id, enabled = on) },
             onColor = { id, idx -> viewModel.updateCoveragePoint(id, colorIndex = idx) },
+            onParams = { id, tx, freq, ant, sens ->
+                viewModel.setCoveragePointParams(id, tx, freq, ant, sens)
+            },
             onDelete = { id -> viewModel.removeCoveragePoint(id) },
             onDismiss = { showManage = false },
         )
@@ -317,13 +336,20 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
 private fun ManagePointsSheet(
     points: List<CoveragePoint>,
     dark: Boolean,
+    defaults: RadioParams,
     onToggle: (String, Boolean) -> Unit,
     onColor: (String, Int) -> Unit,
+    onParams: (String, Double?, Double?, Double?, Double?) -> Unit,
     onDelete: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
-        Column(modifier = Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(bottom = 24.dp),
+        ) {
             Text(
                 text = "Coverage points",
                 style = MaterialTheme.typography.titleLarge,
@@ -387,11 +413,99 @@ private fun ManagePointsSheet(
                             }
                         }
                     }
+                    PointParamsFields(point = p, defaults = defaults, onParams = onParams)
                 }
             }
         }
     }
 }
+
+/**
+ * The optional radio overrides for one point. Every field defaults to the node's radio
+ * config (shown as the placeholder); leaving a field empty keeps the default.
+ */
+@Composable
+private fun PointParamsFields(
+    point: CoveragePoint,
+    defaults: RadioParams,
+    onParams: (String, Double?, Double?, Double?, Double?) -> Unit,
+) {
+    var tx by remember(point.id) { mutableStateOf(point.txPowerDbm?.fmt() ?: "") }
+    var freq by remember(point.id) { mutableStateOf(point.freqMhz?.fmt() ?: "") }
+    var ant by remember(point.id) { mutableStateOf(point.antennaM?.fmt() ?: "") }
+    var sens by remember(point.id) { mutableStateOf(point.rxSensitivityDbm?.fmt() ?: "") }
+
+    fun push() = onParams(
+        point.id,
+        tx.toDoubleWithComma(),
+        freq.toDoubleWithComma(),
+        ant.toDoubleWithComma(),
+        sens.toDoubleWithComma(),
+    )
+
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.padding(start = 32.dp, top = 4.dp, bottom = 8.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ParamField(
+                value = tx,
+                onValue = { tx = it; push() },
+                label = "TX power dBm",
+                placeholder = defaults.txPowerDbm.fmt(),
+                modifier = Modifier.weight(1f),
+            )
+            ParamField(
+                value = freq,
+                onValue = { freq = it; push() },
+                label = "Frequency MHz",
+                placeholder = defaults.freqMHz.fmt(),
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ParamField(
+                value = ant,
+                onValue = { ant = it; push() },
+                label = "Antenna m",
+                placeholder = CoverageDefaults.TX_ANTENNA_M.fmt(),
+                modifier = Modifier.weight(1f),
+            )
+            ParamField(
+                value = sens,
+                onValue = { sens = it; push() },
+                label = "RX sens. dBm",
+                placeholder = defaults.sensitivityDbm.fmt(),
+                modifier = Modifier.weight(1f),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ParamField(
+    value: String,
+    onValue: (String) -> Unit,
+    label: String,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValue,
+        label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+        placeholder = { Text(placeholder) },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        textStyle = MaterialTheme.typography.bodyMedium,
+        modifier = modifier,
+    )
+}
+
+private fun Double.fmt(): String =
+    if (this == Math.rint(this)) toLong().toString() else "%.3f".format(this).trimEnd('0').trimEnd('.')
+
+private fun String.toDoubleWithComma(): Double? = trim().replace(',', '.').toDoubleOrNull()
 
 @Composable
 private fun BoxScope.InfoBanner(text: String) {

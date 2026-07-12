@@ -32,6 +32,7 @@ import com.rekosk.remesh.data.coverage.CoverageDefaults
 import com.rekosk.remesh.data.coverage.CoverageEngine
 import com.rekosk.remesh.data.coverage.CoverageResult
 import com.rekosk.remesh.data.coverage.RadioParams
+import com.rekosk.remesh.data.coverage.TerrainDem
 import com.rekosk.remesh.data.model.ConversationSummary
 import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.DiscoveredNodeInfo
@@ -43,6 +44,8 @@ import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.RecentAdvert
 import com.rekosk.remesh.data.model.TraceHop
 import com.rekosk.remesh.data.model.NodeSettings
+import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +55,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.pow
 
 /** How many noise-floor readings the live chart keeps on screen. */
@@ -616,6 +620,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     // ---------------- signal coverage ----------------
 
     private val coverageEngine = CoverageEngine()
+    private val terrainDem = TerrainDem(File(application.cacheDir, "terrarium"))
 
     val coveragePoints: StateFlow<List<CoveragePoint>> = repository.coveragePoints
 
@@ -628,25 +633,66 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         enabled: Boolean? = null,
     ) = repository.updateCoveragePoint(id, label, colorIndex, enabled)
 
+    fun setCoveragePointParams(
+        id: String,
+        txPowerDbm: Double?,
+        freqMhz: Double?,
+        antennaM: Double?,
+        rxSensitivityDbm: Double?,
+    ) = repository.setCoveragePointParams(id, txPowerDbm, freqMhz, antennaM, rxSensitivityDbm)
+
     fun removeCoveragePoint(id: String) = repository.removeCoveragePoint(id)
 
     /**
-     * Computes a terrain signal-coverage heatmap for a point, tinted [baseColorArgb]. Heavy
-     * (elevation network fetch + propagation math); returns null on failure. Radio parameters
-     * come from the connected node when available, else sane MeshCore defaults.
+     * Baseline radio parameters: the connected node's radio config when available (frequency,
+     * TX power, SF/bandwidth-derived sensitivity), else MeshCore-typical defaults. Per-point
+     * overrides are applied on top in [computeCoverage].
      */
-    suspend fun computeCoverage(latE6: Int, lonE6: Int, baseColorArgb: Int): CoverageResult? {
+    fun defaultRadioParams(): RadioParams {
         val self = repository.selfInfo.value
-        val params = RadioParams(
+        return RadioParams(
             freqMHz = self?.radioFreqKhz?.let { it / 1000.0 } ?: CoverageDefaults.DEFAULT_FREQ_MHZ,
             txPowerDbm = self?.txPower?.toDouble() ?: CoverageDefaults.DEFAULT_TX_DBM,
             sensitivityDbm = self?.let { CoverageDefaults.sensitivityDbm(it.spreadingFactor, it.radioBandwidthHz) }
                 ?: CoverageDefaults.DEFAULT_SENS_DBM,
         )
-        return runCatching {
-            coverageEngine.compute(latE6 / 1e6, lonE6 / 1e6, params, baseColorArgb)
-        }.getOrNull()
     }
+
+    /**
+     * Computes the terrain signal-coverage heatmap for a coverage point, tinted [baseColorArgb],
+     * honouring the point's optional radio overrides. Heavy (terrain-tile fetch + viewshed
+     * math on background dispatchers); returns null on failure.
+     */
+    suspend fun computeCoverage(point: CoveragePoint, baseColorArgb: Int): CoverageResult? {
+        val defaults = defaultRadioParams()
+        val params = defaults.copy(
+            freqMHz = point.freqMhz ?: defaults.freqMHz,
+            txPowerDbm = point.txPowerDbm ?: defaults.txPowerDbm,
+            sensitivityDbm = point.rxSensitivityDbm ?: defaults.sensitivityDbm,
+            txAntennaM = point.antennaM ?: CoverageDefaults.TX_ANTENNA_M,
+        )
+        return computeCoverageAt(point.latE6, point.lonE6, params, baseColorArgb)
+    }
+
+    /** Theoretical coverage for a repeater: node radio defaults + a repeater-mast antenna. */
+    suspend fun computeRepeaterCoverage(latE6: Int, lonE6: Int, baseColorArgb: Int): CoverageResult? =
+        computeCoverageAt(
+            latE6, lonE6,
+            defaultRadioParams().copy(txAntennaM = CoverageDefaults.REPEATER_ANTENNA_M),
+            baseColorArgb,
+        )
+
+    private suspend fun computeCoverageAt(
+        latE6: Int,
+        lonE6: Int,
+        params: RadioParams,
+        baseColorArgb: Int,
+    ): CoverageResult? = runCatching {
+        val lat = latE6 / 1e6
+        val lon = lonE6 / 1e6
+        val sampler = withContext(Dispatchers.IO) { terrainDem.prepare(lat, lon, params.maxRangeM) }
+        coverageEngine.compute(lat, lon, params, baseColorArgb, sampler)
+    }.getOrNull()
 
     fun setSelfLocation(latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {
         viewModelScope.launch {

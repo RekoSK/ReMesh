@@ -1930,6 +1930,34 @@ class MeshRepository(
         requestSave()
     }
 
+    /**
+     * Sets a point's radio overrides outright — unlike [updateCoveragePoint], a null here
+     * *clears* the override back to the node/app default rather than leaving it unchanged.
+     */
+    fun setCoveragePointParams(
+        id: String,
+        txPowerDbm: Double?,
+        freqMhz: Double?,
+        antennaM: Double?,
+        rxSensitivityDbm: Double?,
+    ) {
+        _coveragePoints.update { list ->
+            list.map {
+                if (it.id == id) {
+                    it.copy(
+                        txPowerDbm = txPowerDbm,
+                        freqMhz = freqMhz,
+                        antennaM = antennaM,
+                        rxSensitivityDbm = rxSensitivityDbm,
+                    )
+                } else {
+                    it
+                }
+            }
+        }
+        requestSave()
+    }
+
     fun removeCoveragePoint(id: String) {
         _coveragePoints.update { list -> list.filterNot { it.id == id } }
         requestSave()

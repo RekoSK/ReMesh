@@ -105,6 +105,12 @@ data class CoveragePoint(
     /** Index into the avatar palette (see `avatarColorByIndex`). */
     val colorIndex: Int,
     val enabled: Boolean = true,
+    // Optional radio overrides; null = use the node's radio config / app defaults.
+    val txPowerDbm: Double? = null,
+    val freqMhz: Double? = null,
+    /** Antenna height above ground, metres. */
+    val antennaM: Double? = null,
+    val rxSensitivityDbm: Double? = null,
 )
 
 /**
