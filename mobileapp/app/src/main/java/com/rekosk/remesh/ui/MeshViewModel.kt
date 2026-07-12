@@ -44,7 +44,6 @@ import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.RecentAdvert
 import com.rekosk.remesh.data.model.TraceHop
 import com.rekosk.remesh.data.model.NodeSettings
-import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -618,30 +617,11 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------- signal coverage ----------------
+    // Deliberately stateless: points and terrain live in the coverage screen's composition
+    // (via the screen-scoped [TerrainDem]) and are forgotten when it closes. Nothing is
+    // persisted to disk or retained in the view model.
 
     private val coverageEngine = CoverageEngine()
-    private val terrainDem = TerrainDem(File(application.cacheDir, "terrarium"))
-
-    val coveragePoints: StateFlow<List<CoveragePoint>> = repository.coveragePoints
-
-    fun addCoveragePoint(latE6: Int, lonE6: Int): String = repository.addCoveragePoint(latE6, lonE6)
-
-    fun updateCoveragePoint(
-        id: String,
-        label: String? = null,
-        colorIndex: Int? = null,
-        enabled: Boolean? = null,
-    ) = repository.updateCoveragePoint(id, label, colorIndex, enabled)
-
-    fun setCoveragePointParams(
-        id: String,
-        txPowerDbm: Double?,
-        freqMhz: Double?,
-        antennaM: Double?,
-        rxSensitivityDbm: Double?,
-    ) = repository.setCoveragePointParams(id, txPowerDbm, freqMhz, antennaM, rxSensitivityDbm)
-
-    fun removeCoveragePoint(id: String) = repository.removeCoveragePoint(id)
 
     /**
      * Baseline radio parameters: the connected node's radio config when available (frequency,
@@ -660,10 +640,11 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Computes the terrain signal-coverage heatmap for a coverage point, tinted [baseColorArgb],
-     * honouring the point's optional radio overrides. Heavy (terrain-tile fetch + viewshed
-     * math on background dispatchers); returns null on failure.
+     * honouring the point's optional radio overrides. The compute range is derived from the
+     * resulting link budget. Heavy (terrain-tile fetch + viewshed math on background
+     * dispatchers); returns null on failure.
      */
-    suspend fun computeCoverage(point: CoveragePoint, baseColorArgb: Int): CoverageResult? {
+    suspend fun computeCoverage(point: CoveragePoint, baseColorArgb: Int, dem: TerrainDem): CoverageResult? {
         val defaults = defaultRadioParams()
         val params = defaults.copy(
             freqMHz = point.freqMhz ?: defaults.freqMHz,
@@ -671,27 +652,34 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
             sensitivityDbm = point.rxSensitivityDbm ?: defaults.sensitivityDbm,
             txAntennaM = point.antennaM ?: CoverageDefaults.TX_ANTENNA_M,
         )
-        return computeCoverageAt(point.latE6, point.lonE6, params, baseColorArgb)
+        return computeCoverageAt(point.latE6, point.lonE6, params, baseColorArgb, dem)
     }
 
     /** Theoretical coverage for a repeater: node radio defaults + a repeater-mast antenna. */
-    suspend fun computeRepeaterCoverage(latE6: Int, lonE6: Int, baseColorArgb: Int): CoverageResult? =
-        computeCoverageAt(
-            latE6, lonE6,
-            defaultRadioParams().copy(txAntennaM = CoverageDefaults.REPEATER_ANTENNA_M),
-            baseColorArgb,
-        )
+    suspend fun computeRepeaterCoverage(
+        latE6: Int,
+        lonE6: Int,
+        baseColorArgb: Int,
+        dem: TerrainDem,
+    ): CoverageResult? = computeCoverageAt(
+        latE6, lonE6,
+        defaultRadioParams().copy(txAntennaM = CoverageDefaults.REPEATER_ANTENNA_M),
+        baseColorArgb,
+        dem,
+    )
 
     private suspend fun computeCoverageAt(
         latE6: Int,
         lonE6: Int,
         params: RadioParams,
         baseColorArgb: Int,
+        dem: TerrainDem,
     ): CoverageResult? = runCatching {
+        val resolved = params.withDerivedRange()
         val lat = latE6 / 1e6
         val lon = lonE6 / 1e6
-        val sampler = withContext(Dispatchers.IO) { terrainDem.prepare(lat, lon, params.maxRangeM) }
-        coverageEngine.compute(lat, lon, params, baseColorArgb, sampler)
+        val sampler = withContext(Dispatchers.IO) { dem.prepare(lat, lon, resolved.maxRangeM) }
+        coverageEngine.compute(lat, lon, resolved, baseColorArgb, sampler)
     }.getOrNull()
 
     fun setSelfLocation(latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {

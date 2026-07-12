@@ -94,8 +94,9 @@ enum class DeliveryState {
 }
 
 /**
- * A user-placed point on the Signal-coverage map. Each has a palette colour and can be
- * enabled/disabled; its terrain signal coverage is computed on demand. Local-only (per node).
+ * A user-placed point on the Signal-coverage map. Each has a palette colour, can be
+ * enabled/disabled, and may override the radio parameters used for its coverage compute.
+ * Deliberately ephemeral: lives only while the coverage screen is open, never persisted.
  */
 data class CoveragePoint(
     val id: String,

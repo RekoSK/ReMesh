@@ -11,7 +11,6 @@ import com.rekosk.remesh.ble.RawPacket
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.ChannelKind
 import com.rekosk.remesh.data.model.Contact
-import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.ConversationSummary
 import com.rekosk.remesh.data.model.DeliveryState
 import com.rekosk.remesh.data.model.HeardRepeat
@@ -139,10 +138,6 @@ class MeshRepository(
     // A latE6/lonE6 pair keyed by target: PENDING_SELF for our own node, else a contact id.
     private val _pendingLocations = MutableStateFlow<Map<String, Pair<Int, Int>>>(emptyMap())
     val pendingLocations: StateFlow<Map<String, Pair<Int, Int>>> = _pendingLocations.asStateFlow()
-
-    // User-placed signal-coverage points (local only, persisted per node).
-    private val _coveragePoints = MutableStateFlow<List<CoveragePoint>>(emptyList())
-    val coveragePoints: StateFlow<List<CoveragePoint>> = _coveragePoints.asStateFlow()
 
     private val _deviceInfo = MutableStateFlow<MeshFrame.DeviceInfo?>(null)
     val deviceInfo: StateFlow<MeshFrame.DeviceInfo?> = _deviceInfo.asStateFlow()
@@ -1636,7 +1631,6 @@ class MeshRepository(
         _pendingLocations.value = node?.pendingLocations
             ?.associate { it.target to (it.latE6 to it.lonE6) }
             .orEmpty()
-        _coveragePoints.value = node?.coveragePoints?.map { it.toDomain() }.orEmpty()
         // Rebuild the id -> key-prefix map from the ids themselves, so a contact opened
         // offline still resolves (sending stays blocked until connected regardless).
         contactKeys.clear()
@@ -1672,7 +1666,6 @@ class MeshRepository(
             pendingLocations = _pendingLocations.value.map { (target, c) ->
                 PersistedPendingLocation(target, c.first, c.second)
             },
-            coveragePoints = _coveragePoints.value.map { it.toPersisted() },
         )
         _savedNodes.value = summaries()
         return savedNodesByKey.values.toList()
@@ -1893,76 +1886,6 @@ class MeshRepository(
         refreshSelfInfo()
     }
 
-    // ---------------- signal-coverage points (local only) ----------------
-
-    /** Adds a coverage point at the given position; returns its new id. */
-    fun addCoveragePoint(latE6: Int, lonE6: Int): String {
-        val id = "cov-${System.nanoTime()}"
-        val n = _coveragePoints.value.size
-        val used = _coveragePoints.value.map { it.colorIndex }.toSet()
-        // COLOR_PALETTE_COUNT mirrors the avatar palette in the UI layer (avatarColorByIndex).
-        val colorIndex = (0 until COLOR_PALETTE_COUNT).firstOrNull { it !in used } ?: (n % COLOR_PALETTE_COUNT)
-        val label = "Point " + if (n < 26) ('A' + n).toString() else "${n + 1}"
-        _coveragePoints.update { it + CoveragePoint(id, label, latE6, lonE6, colorIndex, enabled = true) }
-        requestSave()
-        return id
-    }
-
-    fun updateCoveragePoint(
-        id: String,
-        label: String? = null,
-        colorIndex: Int? = null,
-        enabled: Boolean? = null,
-    ) {
-        _coveragePoints.update { list ->
-            list.map {
-                if (it.id == id) {
-                    it.copy(
-                        label = label ?: it.label,
-                        colorIndex = colorIndex ?: it.colorIndex,
-                        enabled = enabled ?: it.enabled,
-                    )
-                } else {
-                    it
-                }
-            }
-        }
-        requestSave()
-    }
-
-    /**
-     * Sets a point's radio overrides outright — unlike [updateCoveragePoint], a null here
-     * *clears* the override back to the node/app default rather than leaving it unchanged.
-     */
-    fun setCoveragePointParams(
-        id: String,
-        txPowerDbm: Double?,
-        freqMhz: Double?,
-        antennaM: Double?,
-        rxSensitivityDbm: Double?,
-    ) {
-        _coveragePoints.update { list ->
-            list.map {
-                if (it.id == id) {
-                    it.copy(
-                        txPowerDbm = txPowerDbm,
-                        freqMhz = freqMhz,
-                        antennaM = antennaM,
-                        rxSensitivityDbm = rxSensitivityDbm,
-                    )
-                } else {
-                    it
-                }
-            }
-        }
-        requestSave()
-    }
-
-    fun removeCoveragePoint(id: String) {
-        _coveragePoints.update { list -> list.filterNot { it.id == id } }
-        requestSave()
-    }
-
     /** Deletes a contact from the node and forgets it locally. */
     suspend fun removeContact(contactId: String): String? {
         val key = pubKeyOf(contactId) ?: return "Unknown contact"
@@ -2011,9 +1934,6 @@ class MeshRepository(
 
         /** [pendingLocations] key for our own node's queued location. */
         const val PENDING_SELF = "self"
-
-        /** Palette size for coverage-point colour assignment (matches `avatarColorByIndex`). */
-        const val COLOR_PALETTE_COUNT = 14
 
         /** `MAX_GROUP_CHANNELS` in the firmware. DEVICE_INFO may report fewer. */
         const val MAX_CHANNEL_SLOTS = 8

@@ -72,6 +72,7 @@ import com.rekosk.remesh.R
 import com.rekosk.remesh.data.coverage.CoverageDefaults
 import com.rekosk.remesh.data.coverage.CoverageResult
 import com.rekosk.remesh.data.coverage.RadioParams
+import com.rekosk.remesh.data.coverage.TerrainDem
 import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.MeshViewModel
@@ -94,6 +95,9 @@ import org.osmdroid.views.overlay.Marker
  * Signal-coverage tool: drop coloured points on the map, each rendering a terrain-aware
  * MeshCore coverage heatmap. Points are managed from the top-bar menu (not on the map). A
  * top-bar repeater toggle shows repeaters; tapping one shows its theoretical coverage.
+ *
+ * Everything here is deliberately ephemeral: points, computed coverage, and the fetched
+ * terrain all live in this composition only and are forgotten when the screen closes.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,17 +105,32 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val dark = isSystemInDarkTheme()
-    val points by viewModel.coveragePoints.collectAsStateWithLifecycle()
+    val points = remember { mutableStateListOf<CoveragePoint>() }
     val nodes by viewModel.nodePositions.collectAsStateWithLifecycle()
     val repeaters = remember(nodes) { nodes.filter { it.type == NodeType.REPEATER } }
 
     val scope = rememberCoroutineScope()
+    val dem = remember { TerrainDem() }
     val results = remember { mutableStateMapOf<String, CoverageResult>() }
     val computing = remember { mutableStateMapOf<String, Boolean>() }
     val repeaterResults = remember { mutableStateMapOf<String, CoverageResult>() }
     val computingRepeaters = remember { mutableStateListOf<String>() }
     var showRepeaters by remember { mutableStateOf(false) }
     var showManage by remember { mutableStateOf(false) }
+    var pointCounter by remember { mutableStateOf(0) }
+
+    fun addPoint(latE6: Int, lonE6: Int) {
+        val n = pointCounter++
+        val used = points.map { it.colorIndex }.toSet()
+        val colorIndex = (0 until PALETTE_SIZE).firstOrNull { it !in used } ?: (n % PALETTE_SIZE)
+        val label = "Point " + if (n < 26) ('A' + n).toString() else "${n + 1}"
+        points.add(CoveragePoint("cov-$n", label, latE6, lonE6, colorIndex))
+    }
+
+    fun replacePoint(id: String, transform: (CoveragePoint) -> CoveragePoint) {
+        val i = points.indexOfFirst { it.id == id }
+        if (i >= 0) points[i] = transform(points[i])
+    }
 
     val towerIcon = remember { ResourcesCompat.getDrawable(context.resources, R.drawable.ic_cell_tower, null) }
     val backingArgb = MaterialTheme.colorScheme.background.toArgb()
@@ -147,7 +166,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
         val overlay = MapEventsOverlay(object : MapEventsReceiver {
             override fun singleTapConfirmedHelper(p: GeoPoint): Boolean = false
             override fun longPressHelper(p: GeoPoint): Boolean {
-                viewModel.addCoveragePoint((p.latitude * 1e6).toInt(), (p.longitude * 1e6).toInt())
+                addPoint((p.latitude * 1e6).toInt(), (p.longitude * 1e6).toInt())
                 return true
             }
         })
@@ -170,14 +189,15 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                 }
                 delay(700)
                 computing[p.id] = true
-                val res = viewModel.computeCoverage(p, avatarColorByIndex(p.colorIndex, dark).toArgb())
+                val res = viewModel.computeCoverage(p, avatarColorByIndex(p.colorIndex, dark).toArgb(), dem)
                 computing[p.id] = false
                 if (res != null) results[p.id] = res
             }
         }
     }
-    // Drop cached coverage for points that no longer exist.
-    LaunchedEffect(points) {
+    // Drop computed coverage for points that no longer exist.
+    val pointIdsKey = points.joinToString(separator = ",") { it.id }
+    LaunchedEffect(pointIdsKey) {
         val ids = points.map { it.id }.toSet()
         (results.keys - ids).forEach { results.remove(it) }
     }
@@ -270,6 +290,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                                                     (node.latitude * 1e6).toInt(),
                                                     (node.longitude * 1e6).toInt(),
                                                     repeaterArgb,
+                                                    dem,
                                                 )
                                                 computingRepeaters.remove(node.id)
                                                 if (res != null) repeaterResults[node.id] = res
@@ -320,12 +341,14 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
             points = points,
             dark = dark,
             defaults = viewModel.defaultRadioParams(),
-            onToggle = { id, on -> viewModel.updateCoveragePoint(id, enabled = on) },
-            onColor = { id, idx -> viewModel.updateCoveragePoint(id, colorIndex = idx) },
+            onToggle = { id, on -> replacePoint(id) { it.copy(enabled = on) } },
+            onColor = { id, idx -> replacePoint(id) { it.copy(colorIndex = idx) } },
             onParams = { id, tx, freq, ant, sens ->
-                viewModel.setCoveragePointParams(id, tx, freq, ant, sens)
+                replacePoint(id) {
+                    it.copy(txPowerDbm = tx, freqMhz = freq, antennaM = ant, rxSensitivityDbm = sens)
+                }
             },
-            onDelete = { id -> viewModel.removeCoveragePoint(id) },
+            onDelete = { id -> points.removeAll { it.id == id } },
             onDismiss = { showManage = false },
         )
     }

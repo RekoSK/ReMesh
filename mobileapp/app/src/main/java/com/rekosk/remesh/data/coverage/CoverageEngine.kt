@@ -21,8 +21,18 @@ data class RadioParams(
     val txAntennaM: Double = CoverageDefaults.TX_ANTENNA_M,
     /** Assumed receiver antenna height above ground, metres. */
     val rxAntennaM: Double = CoverageDefaults.RX_ANTENNA_M,
-    val maxRangeM: Double = CoverageDefaults.MAX_RANGE_M,
-)
+    /** Compute boundary. 0 = derive from the link budget (see [CoverageMath.maxRangeM]). */
+    val maxRangeM: Double = 0.0,
+) {
+    /** The params with [maxRangeM] resolved from the link budget when not set explicitly. */
+    fun withDerivedRange(): RadioParams =
+        if (maxRangeM > 0.0) this
+        else copy(
+            maxRangeM = CoverageMath.maxRangeM(
+                freqMHz, txPowerDbm, sensitivityDbm, txAntennaM, rxAntennaM,
+            ),
+        )
+}
 
 /** A georeferenced coverage heatmap: an ARGB bitmap over a lat/lon bounding box. */
 class CoverageResult(
@@ -40,7 +50,10 @@ object CoverageDefaults {
     const val TX_ANTENNA_M = 5.0
     const val RX_ANTENNA_M = 2.0
     const val REPEATER_ANTENNA_M = 12.0
-    const val MAX_RANGE_M = 25_000.0
+
+    /** Sanity clamps on the link-budget-derived compute range. */
+    const val MIN_RANGE_M = 2_000.0
+    const val MAX_RANGE_CAP_M = 80_000.0
 
     /** Combined TX+RX antenna gain, dB. */
     const val SYSTEM_GAIN_DB = 2.0
@@ -96,6 +109,27 @@ object CoverageMath {
     /** Terrarium terrain-tile RGB → metres above sea level. */
     fun terrariumElevation(r: Int, g: Int, b: Int): Double =
         (r * 256 + g + b / 256.0) - 32768.0
+
+    /**
+     * Maximum reach of the signal for the given link parameters: the distance at which the
+     * best-case (unobstructed) loss — free space near in, the two-ray ground limit far out —
+     * spends the whole link budget. TX power, frequency, sensitivity, and antenna heights all
+     * move this, so it is the natural compute boundary; clamped only for compute sanity.
+     */
+    fun maxRangeM(
+        freqMHz: Double,
+        txPowerDbm: Double,
+        sensitivityDbm: Double,
+        txAntennaM: Double,
+        rxAntennaM: Double,
+    ): Double {
+        val budget = txPowerDbm + CoverageDefaults.SYSTEM_GAIN_DB - sensitivityDbm
+        val fsplBoundM = 1000.0 * 10.0.pow((budget - 32.44 - 20 * log10(freqMHz)) / 20.0)
+        val heights = txAntennaM.coerceAtLeast(0.5) * rxAntennaM.coerceAtLeast(0.5)
+        val twoRayBoundM = 10.0.pow((budget + 20 * log10(heights)) / 40.0)
+        return minOf(fsplBoundM, twoRayBoundM)
+            .coerceIn(CoverageDefaults.MIN_RANGE_M, CoverageDefaults.MAX_RANGE_CAP_M)
+    }
 }
 
 /**
@@ -114,9 +148,10 @@ class CoverageEngine {
         baseColorArgb: Int,
         sampler: ElevationSampler,
     ): CoverageResult = withContext(Dispatchers.Default) {
+        val resolved = params.withDerivedRange()
         val n = CoverageDefaults.RASTER_SIZE
-        val margins = computeMargins(sourceLat, sourceLon, params, sampler, n)
-        colorize(sourceLat, sourceLon, params, margins, n, baseColorArgb)
+        val margins = computeMargins(sourceLat, sourceLon, resolved, sampler, n)
+        colorize(sourceLat, sourceLon, resolved, margins, n, baseColorArgb)
     }
 
     private fun colorize(

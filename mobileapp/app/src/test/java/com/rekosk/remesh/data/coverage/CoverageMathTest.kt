@@ -52,6 +52,20 @@ class CoverageMathTest {
     }
 
     @Test
+    fun maxRange_followsTheLinkBudget() {
+        val base = CoverageMath.maxRangeM(869.525, 22.0, -130.0, 5.0, 2.0)
+        // Two-ray bound with a 154 dB budget and 5 m/2 m antennas ≈ 22 km.
+        assertEquals(22_400.0, base, 1_500.0)
+        // More TX power, a better receiver, or taller masts push the boundary out.
+        assertTrue(CoverageMath.maxRangeM(869.525, 30.0, -130.0, 5.0, 2.0) > base)
+        assertTrue(CoverageMath.maxRangeM(869.525, 22.0, -137.0, 5.0, 2.0) > base)
+        assertTrue(CoverageMath.maxRangeM(869.525, 22.0, -130.0, 12.0, 2.0) > base)
+        // A weak link shrinks it, down to the sanity floor.
+        assertTrue(CoverageMath.maxRangeM(869.525, 0.0, -100.0, 1.0, 1.0) < base)
+        assertTrue(CoverageMath.maxRangeM(869.525, -9.0, -80.0, 0.5, 0.5) >= CoverageDefaults.MIN_RANGE_M)
+    }
+
+    @Test
     fun viewshed_ridgeShadowsTerrainBehindIt_openPlainStaysCovered() {
         val params = RadioParams(
             freqMHz = 869.525,
