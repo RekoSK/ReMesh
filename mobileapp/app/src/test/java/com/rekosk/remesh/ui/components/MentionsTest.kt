@@ -65,4 +65,27 @@ class MentionsTest {
         assertEquals("hello world", b.text)
         assertEquals(5, b.cursor)
     }
+
+    @Test
+    fun normalize_keepsMultiWordTokenIntact() {
+        // A name with spaces must survive: the inner space is not the token's end.
+        val inserted = "@[Ivan OM2IDN] "
+        val n = normalizeMentionTyping(inserted, inserted.length)
+        assertEquals(inserted, n.text)
+
+        val mid = "hey @[Ivan OM2IDN] there"
+        assertEquals(mid, normalizeMentionTyping(mid, 18).text)
+    }
+
+    @Test
+    fun normalize_unwrapsBrokenMultiWordToken() {
+        // The closing ']' of "@[Ivan OM2IDN]" was deleted.
+        val n = normalizeMentionTyping("hey @[Ivan OM2IDN ", 18)
+        assertEquals("hey Ivan OM2IDN ", n.text)
+    }
+
+    @Test
+    fun mentionsName_matchesMultiWordName() {
+        assertTrue(mentionsName("yo @[Ivan OM2IDN] hi", "Ivan OM2IDN"))
+    }
 }

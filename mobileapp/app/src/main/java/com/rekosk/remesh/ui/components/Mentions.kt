@@ -117,12 +117,14 @@ fun normalizeMentionTyping(text: String, cursor: Int): NormalizedText {
             }
         }
     }
-    // backspace-revert: a malformed "@[word" (its ] was deleted) → "word"
+    // backspace-revert: a malformed "@[name" whose closing ] was deleted → "name".
+    // The name may contain spaces, so "broken" means there is no valid closing ] (either
+    // none at all, or a stray '[' / newline appears before it), NOT just that a space exists.
     val open = text.lastIndexOf("@[", (cursor - 1).coerceAtLeast(0))
     if (open >= 0) {
-        val tokenEnd = text.indexOf(' ', open + 2).let { if (it == -1) text.length else it }
         val close = text.indexOf(']', open + 2)
-        val malformed = close == -1 || close >= tokenEnd
+        val malformed = close == -1 ||
+            text.substring(open + 2, close).any { it == '[' || it == '\n' }
         val boundaryOk = open == 0 || text[open - 1] == ' ' || text[open - 1] == '\n'
         if (malformed && boundaryOk) {
             val newText = text.removeRange(open, open + 2)
