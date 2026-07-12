@@ -126,6 +126,20 @@ class MeshRepository(
     private val _selfInfo = MutableStateFlow<MeshFrame.SelfInfo?>(null)
     val selfInfo: StateFlow<MeshFrame.SelfInfo?> = _selfInfo.asStateFlow()
 
+    // Last known radio config of the active node. Unlike _selfInfo this survives disconnects
+    // (and restarts, via the node store), so tools keep real defaults while offline.
+    private val _lastRadioConfig = MutableStateFlow<StoredRadioConfig?>(null)
+    val lastRadioConfig: StateFlow<StoredRadioConfig?> = _lastRadioConfig.asStateFlow()
+
+    private fun rememberRadioConfig(self: MeshFrame.SelfInfo) {
+        _lastRadioConfig.value = StoredRadioConfig(
+            freqKhz = self.radioFreqKhz.toInt(),
+            bandwidthHz = self.radioBandwidthHz.toInt(),
+            spreadingFactor = self.spreadingFactor,
+            txPowerDbm = self.txPower,
+        )
+    }
+
     /**
      * Our own node's map position, kept separately from [selfInfo] so it survives a
      * disconnect: live reads set it from SELF_INFO, opening a saved node restores it
@@ -310,6 +324,7 @@ class MeshRepository(
             val self = client.commandSingle(MeshCoreProtocol.encodeAppStart("ReMesh"))
             if (self is MeshFrame.SelfInfo) {
                 _selfInfo.value = self
+                rememberRadioConfig(self)
                 _selfName.value = self.name
                 // Restore this node's saved block before the reads below merge into it,
                 // so the user sees history the instant the handshake finishes.
@@ -459,6 +474,7 @@ class MeshRepository(
         val reply = client.commandSingle(MeshCoreProtocol.encodeAppStart("ReMesh"))
         if (reply is MeshFrame.SelfInfo) {
             _selfInfo.value = reply
+            rememberRadioConfig(reply)
             _selfName.value = reply.name
             updateSelfPosition(reply)
         }
@@ -1631,6 +1647,14 @@ class MeshRepository(
         _pendingLocations.value = node?.pendingLocations
             ?.associate { it.target to (it.latE6 to it.lonE6) }
             .orEmpty()
+        _lastRadioConfig.value = node
+            ?.takeIf { it.radioFreqKhz > 0 }
+            ?.let {
+                StoredRadioConfig(
+                    it.radioFreqKhz, it.radioBandwidthHz, it.radioSpreadingFactor, it.radioTxPowerDbm,
+                )
+            }
+            ?: _lastRadioConfig.value
         // Rebuild the id -> key-prefix map from the ids themselves, so a contact opened
         // offline still resolves (sending stays blocked until connected regardless).
         contactKeys.clear()
@@ -1658,6 +1682,11 @@ class MeshRepository(
             lastConnected = if (connected) System.currentTimeMillis() else existing?.lastConnected ?: 0L,
             selfLatE6 = _selfInfo.value?.latE6 ?: existing?.selfLatE6 ?: 0,
             selfLonE6 = _selfInfo.value?.lonE6 ?: existing?.selfLonE6 ?: 0,
+            radioFreqKhz = _lastRadioConfig.value?.freqKhz ?: existing?.radioFreqKhz ?: 0,
+            radioBandwidthHz = _lastRadioConfig.value?.bandwidthHz ?: existing?.radioBandwidthHz ?: 0,
+            radioSpreadingFactor = _lastRadioConfig.value?.spreadingFactor
+                ?: existing?.radioSpreadingFactor ?: 0,
+            radioTxPowerDbm = _lastRadioConfig.value?.txPowerDbm ?: existing?.radioTxPowerDbm ?: 0,
             contacts = _contacts.value.map { it.toPersisted() },
             channels = _channels.value.map { it.toPersisted() },
             adverts = _recentAdverts.value.map { it.toPersisted() },
@@ -2006,6 +2035,14 @@ class MeshRepository(
 
 /** Our own node's map position, decoupled from the live [MeshFrame.SelfInfo] frame. */
 data class SelfPosition(val name: String, val latE6: Int, val lonE6: Int)
+
+/** The active node's last known radio config; kept across disconnects and app restarts. */
+data class StoredRadioConfig(
+    val freqKhz: Int,
+    val bandwidthHz: Int,
+    val spreadingFactor: Int,
+    val txPowerDbm: Int,
+)
 
 internal fun MeshFrame.Contact.toContact(): Contact = Contact(
     id = MeshRepository.contactConversationId(keyPrefix),

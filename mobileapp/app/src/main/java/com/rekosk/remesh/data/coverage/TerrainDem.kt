@@ -1,6 +1,7 @@
 package com.rekosk.remesh.data.coverage
 
 import android.graphics.BitmapFactory
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.PI
@@ -17,11 +18,11 @@ fun interface ElevationSampler {
 /**
  * Elevation source backed by AWS Terrarium terrain tiles (free, keyless):
  * `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`, 256x256 PNG where
- * `elevation = (R*256 + G + B/256) - 32768` metres. Tiles live only in this instance's memory —
- * nothing is written to disk, so scoping an instance to the coverage screen means all terrain
- * data is fetched fresh in real time and forgotten when the screen closes.
+ * `elevation = (R*256 + G + B/256) - 32768` metres. Decoded tiles are held in this instance's
+ * memory; the raw PNGs are also cached in [cacheDir] so revisits don't re-download terrain.
+ * (User points are still ephemeral — only the elevation tiles are cached.)
  */
-class TerrainDem {
+class TerrainDem(private val cacheDir: File? = null) {
 
     /** Decoded tile: 256x256 elevations, metres (rounded). */
     private val tiles = HashMap<Long, ShortArray?>()
@@ -73,12 +74,25 @@ class TerrainDem {
         return decoded
     }
 
-    private fun loadBytes(z: Int, x: Int, y: Int): ByteArray? = runCatching {
-        val conn = URL("$TILE_BASE/$z/$x/$y.png").openConnection() as HttpURLConnection
-        conn.connectTimeout = 15_000
-        conn.readTimeout = 30_000
-        conn.inputStream.use { it.readBytes() }
-    }.getOrNull()
+    private fun loadBytes(z: Int, x: Int, y: Int): ByteArray? {
+        val file = cacheDir?.let { File(it, "terrarium_${z}_${x}_$y.png") }
+        if (file != null && file.exists()) {
+            runCatching { return file.readBytes() }
+        }
+        val bytes = runCatching {
+            val conn = URL("$TILE_BASE/$z/$x/$y.png").openConnection() as HttpURLConnection
+            conn.connectTimeout = 15_000
+            conn.readTimeout = 30_000
+            conn.inputStream.use { it.readBytes() }
+        }.getOrNull() ?: return null
+        if (file != null) {
+            runCatching {
+                file.parentFile?.mkdirs()
+                File(file.path + ".tmp").apply { writeBytes(bytes) }.renameTo(file)
+            }
+        }
+        return bytes
+    }
 
     private fun decodeTile(bytes: ByteArray): ShortArray? {
         val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null

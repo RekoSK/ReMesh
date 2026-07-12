@@ -34,3 +34,31 @@ Build environment reference:
   already wired into the project.
 - PFP (profile picture) backgrounds and name colors are **dark-amber**-like —
   already defined in the project; reuse the existing colors, don't invent new ones.
+
+## 5. PFP / point colour palette (do not reinvent)
+The per-node/per-point colours all come from ONE palette defined in
+`mobileapp/app/src/main/java/com/rekosk/remesh/ui/components/NodeAvatar.kt`.
+Always reuse it — never hardcode new colours for avatars, map markers, or
+signal-coverage points.
+
+- Two theme-tuned lists of **14 Material-500/400 colours**, index-aligned
+  (same index = same hue family):
+  - `AvatarPaletteLight` (Material 600-weight, for light theme):
+    `E53935, D81B60, 8E24AA, 5E35B1, 3949AB, 1E88E5, 039BE5, 00897B,
+     43A047, 7CB342, FB8C00, F4511E, 6D4C41, 546E7A`
+  - `AvatarPaletteDark` (Material 400-weight, brighter, for dark theme):
+    `EF5350, EC407A, AB47BC, 7E57C2, 5C6BC0, 42A5F5, 29B6F6, 26A69A,
+     66BB6A, 9CCC65, FFA726, FF7043, 8D6E63, 78909C`
+- **Deterministic per-contact colour**: `avatarColor(seed, dark)` hashes a
+  stable seed (the contact id / public key) into the palette:
+  `idx = ((seed.hashCode() % 14) + 14) % 14`.
+- **Explicit colour by index** (user-picked, e.g. coverage points):
+  `avatarColorByIndex(index, dark)`; `PALETTE_SIZE = 14`.
+- **Tonal rendering rule** (what makes it look like the contacts list): the
+  disc background is the colour at **22% alpha over the surface** and the
+  glyph/letter is the **full-strength colour** (see `NodeAvatar`, and
+  `nodeMarkerBitmap(..., tonal = true, backing = colorScheme.background)`
+  in `MapScreen.kt` for map markers). Solid full-saturation discs read
+  "brighter than the contacts" — the user explicitly does not want that.
+- Node-type accents (repeater amber `F39C12`, etc.) live in `NodeColors`
+  (`ui/theme/Color.kt`) and are used for non-chat node types.

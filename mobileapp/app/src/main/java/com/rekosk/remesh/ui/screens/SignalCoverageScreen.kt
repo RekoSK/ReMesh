@@ -79,6 +79,7 @@ import com.rekosk.remesh.ui.MeshViewModel
 import com.rekosk.remesh.ui.components.PALETTE_SIZE
 import com.rekosk.remesh.ui.components.avatarColorByIndex
 import com.rekosk.remesh.ui.components.color
+import java.io.File
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
@@ -110,7 +111,8 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     val repeaters = remember(nodes) { nodes.filter { it.type == NodeType.REPEATER } }
 
     val scope = rememberCoroutineScope()
-    val dem = remember { TerrainDem() }
+    val dem = remember { TerrainDem(File(context.cacheDir, "terrarium")) }
+    val defaults by viewModel.defaultRadioParams.collectAsStateWithLifecycle()
     val results = remember { mutableStateMapOf<String, CoverageResult>() }
     val computing = remember { mutableStateMapOf<String, Boolean>() }
     val repeaterResults = remember { mutableStateMapOf<String, CoverageResult>() }
@@ -175,13 +177,15 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     }
     val centered = remember { booleanArrayOf(false) }
 
-    // One compute per point, re-run when its position/colour/enabled/radio params change.
+    // One compute per point, re-run when its position/colour/enabled/radio params change —
+    // or when the companion's radio config (the source of the defaults) arrives/changes.
     // The short delay coalesces rapid edits (typing in the parameter fields) into one compute.
     points.forEach { p ->
         key(p.id) {
             LaunchedEffect(
                 p.latE6, p.lonE6, p.colorIndex, p.enabled,
                 p.txPowerDbm, p.freqMhz, p.antennaM, p.rxSensitivityDbm,
+                defaults,
             ) {
                 if (!p.enabled) {
                     results.remove(p.id)
@@ -340,7 +344,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
         ManagePointsSheet(
             points = points,
             dark = dark,
-            defaults = viewModel.defaultRadioParams(),
+            defaults = defaults,
             onToggle = { id, on -> replacePoint(id) { it.copy(enabled = on) } },
             onColor = { id, idx -> replacePoint(id) { it.copy(colorIndex = idx) } },
             onParams = { id, tx, freq, ant, sens ->

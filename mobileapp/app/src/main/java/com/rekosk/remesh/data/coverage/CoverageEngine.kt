@@ -53,7 +53,7 @@ object CoverageDefaults {
 
     /** Sanity clamps on the link-budget-derived compute range. */
     const val MIN_RANGE_M = 2_000.0
-    const val MAX_RANGE_CAP_M = 80_000.0
+    const val MAX_RANGE_CAP_M = 150_000.0
 
     /** Combined TX+RX antenna gain, dB. */
     const val SYSTEM_GAIN_DB = 2.0

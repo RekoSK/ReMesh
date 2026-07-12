@@ -43,6 +43,12 @@ data class PersistedNode(
     /** This node's own last known position in 1e-6 degrees, so it maps offline. 0/0 = unknown. */
     val selfLatE6: Int = 0,
     val selfLonE6: Int = 0,
+    // Last known radio config, so tools (e.g. signal coverage) get real defaults offline.
+    // 0 = never seen.
+    val radioFreqKhz: Int = 0,
+    val radioBandwidthHz: Int = 0,
+    val radioSpreadingFactor: Int = 0,
+    val radioTxPowerDbm: Int = 0,
     val contacts: List<PersistedContact> = emptyList(),
     val channels: List<PersistedChannel> = emptyList(),
     val adverts: List<PersistedAdvert> = emptyList(),

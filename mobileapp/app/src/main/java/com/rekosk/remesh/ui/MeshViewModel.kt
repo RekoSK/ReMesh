@@ -624,19 +624,42 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     private val coverageEngine = CoverageEngine()
 
     /**
-     * Baseline radio parameters: the connected node's radio config when available (frequency,
-     * TX power, SF/bandwidth-derived sensitivity), else MeshCore-typical defaults. Per-point
-     * overrides are applied on top in [computeCoverage].
+     * Baseline radio parameters, kept in sync with the companion: the live radio config while
+     * connected, else the last config seen from this node (persisted across restarts), else
+     * MeshCore-typical defaults. Per-point overrides are applied on top in [computeCoverage].
      */
-    fun defaultRadioParams(): RadioParams {
-        val self = repository.selfInfo.value
-        return RadioParams(
-            freqMHz = self?.radioFreqKhz?.let { it / 1000.0 } ?: CoverageDefaults.DEFAULT_FREQ_MHZ,
-            txPowerDbm = self?.txPower?.toDouble() ?: CoverageDefaults.DEFAULT_TX_DBM,
-            sensitivityDbm = self?.let { CoverageDefaults.sensitivityDbm(it.spreadingFactor, it.radioBandwidthHz) }
-                ?: CoverageDefaults.DEFAULT_SENS_DBM,
+    val defaultRadioParams: StateFlow<RadioParams> =
+        combine(repository.selfInfo, repository.lastRadioConfig) { self, stored ->
+            when {
+                self != null -> RadioParams(
+                    freqMHz = self.radioFreqKhz / 1000.0,
+                    txPowerDbm = self.txPower.toDouble(),
+                    sensitivityDbm = CoverageDefaults.sensitivityDbm(
+                        self.spreadingFactor, self.radioBandwidthHz,
+                    ),
+                )
+                stored != null -> RadioParams(
+                    freqMHz = stored.freqKhz / 1000.0,
+                    txPowerDbm = stored.txPowerDbm.toDouble(),
+                    sensitivityDbm = CoverageDefaults.sensitivityDbm(
+                        stored.spreadingFactor, stored.bandwidthHz.toLong(),
+                    ),
+                )
+                else -> RadioParams(
+                    freqMHz = CoverageDefaults.DEFAULT_FREQ_MHZ,
+                    txPowerDbm = CoverageDefaults.DEFAULT_TX_DBM,
+                    sensitivityDbm = CoverageDefaults.DEFAULT_SENS_DBM,
+                )
+            }
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            RadioParams(
+                freqMHz = CoverageDefaults.DEFAULT_FREQ_MHZ,
+                txPowerDbm = CoverageDefaults.DEFAULT_TX_DBM,
+                sensitivityDbm = CoverageDefaults.DEFAULT_SENS_DBM,
+            ),
         )
-    }
 
     /**
      * Computes the terrain signal-coverage heatmap for a coverage point, tinted [baseColorArgb],
@@ -645,7 +668,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
      * dispatchers); returns null on failure.
      */
     suspend fun computeCoverage(point: CoveragePoint, baseColorArgb: Int, dem: TerrainDem): CoverageResult? {
-        val defaults = defaultRadioParams()
+        val defaults = defaultRadioParams.value
         val params = defaults.copy(
             freqMHz = point.freqMhz ?: defaults.freqMHz,
             txPowerDbm = point.txPowerDbm ?: defaults.txPowerDbm,
@@ -663,7 +686,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         dem: TerrainDem,
     ): CoverageResult? = computeCoverageAt(
         latE6, lonE6,
-        defaultRadioParams().copy(txAntennaM = CoverageDefaults.REPEATER_ANTENNA_M),
+        defaultRadioParams.value.copy(txAntennaM = CoverageDefaults.REPEATER_ANTENNA_M),
         baseColorArgb,
         dem,
     )
