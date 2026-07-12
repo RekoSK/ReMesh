@@ -31,7 +31,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -234,10 +234,11 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
             )
         },
     ) { innerPadding ->
-        Box(modifier = Modifier.fillMaxSize().padding(innerPadding)) {
+        // clipToBounds keeps osmdroid overlay drawing (heatmaps, marker art) inside the map.
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding).clipToBounds()) {
             AndroidView(
                 factory = { mapView },
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().clipToBounds(),
                 update = { view ->
                     // Rebuild overlays (keep the events overlay at index 0).
                     val events = view.overlays.firstOrNull { it is MapEventsOverlay }
@@ -326,16 +327,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
             )
 
             if (computing.values.any { it } || computingRepeaters.isNotEmpty()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp),
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Computing coverage…", style = MaterialTheme.typography.labelLarge)
-                }
+                MapLoadingIndicator("Computing coverage…")
             }
         }
     }

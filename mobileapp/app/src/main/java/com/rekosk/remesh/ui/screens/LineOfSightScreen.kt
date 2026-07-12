@@ -32,17 +32,21 @@ import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -54,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -166,6 +171,7 @@ fun LineOfSightScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     var freqText by remember { mutableStateOf("") }
     var showNodes by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
 
     val nodes by viewModel.nodePositions.collectAsStateWithLifecycle()
     val defaults by viewModel.defaultRadioParams.collectAsStateWithLifecycle()
@@ -253,8 +259,13 @@ fun LineOfSightScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
         topBar = {
             CenterAlignedTopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    Row {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        }
+                        IconButton(onClick = { showInfo = true }) {
+                            Icon(Icons.Outlined.Info, contentDescription = "What the terms mean")
+                        }
                     }
                 },
                 title = { Text("Line of sight") },
@@ -282,10 +293,12 @@ fun LineOfSightScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                 LosProfilePanel(a, b, prof, dark)
             }
 
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            // clipToBounds: the osmdroid overlays (sight line, marker art) otherwise draw
+            // past the view's edge, over the profile panel above the map.
+            Box(modifier = Modifier.fillMaxWidth().weight(1f).clipToBounds()) {
                 AndroidView(
                     factory = { mapView },
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().clipToBounds(),
                     update = { view ->
                         // Rebuild overlays (keep the events overlay at index 0).
                         val events = view.overlays.firstOrNull { it is MapEventsOverlay }
@@ -378,19 +391,14 @@ fun LineOfSightScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
                 }
 
                 if (computing) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(16.dp),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Computing profile…", style = MaterialTheme.typography.labelLarge)
-                    }
+                    MapLoadingIndicator("Computing profile…")
                 }
             }
         }
+    }
+
+    if (showInfo) {
+        LosTermsDialog(onDismiss = { showInfo = false })
     }
 
     if (showSettings) {
@@ -911,6 +919,106 @@ private fun LosPointSection(
 }
 
 // ---------------- small helpers ----------------
+
+/**
+ * The themed (Material 3 expressive) loading shape, centred over the map while a terrain
+ * compute runs. Shared by the map tools ([SignalCoverageScreen] uses it too).
+ */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+internal fun BoxScope.MapLoadingIndicator(label: String) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.align(Alignment.Center),
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp),
+        ) {
+            LoadingIndicator(modifier = Modifier.size(44.dp))
+            Spacer(Modifier.height(6.dp))
+            Text(label, style = MaterialTheme.typography.labelLarge)
+        }
+    }
+}
+
+/** Plain-language glossary for the status line and chart. */
+@Composable
+private fun LosTermsDialog(onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Got it") }
+        },
+        title = { Text("What the terms mean") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
+                LosTerm(
+                    "Line of sight clear",
+                    "The straight ray between the two antennas passes above the terrain " +
+                        "with enough clearance. This is the best case for a LoRa link.",
+                )
+                LosTerm(
+                    "Blocked by terrain",
+                    "The ground rises above the straight ray somewhere along the path, so " +
+                        "the radios cannot \"see\" each other. The signal must diffract over " +
+                        "the obstacle, which costs a lot of link budget — the link may still " +
+                        "work, but only if the shown path loss stays below the budget.",
+                )
+                LosTerm(
+                    "Fresnel zone obstructed",
+                    "Radio waves need more than a pencil-thin ray: they travel in a " +
+                        "rugby-ball-shaped volume around the line (the first Fresnel zone, " +
+                        "the ellipse on the chart). When terrain pokes into the inner 60% of " +
+                        "it (drawn red), part of the wave is lost even though the direct ray " +
+                        "is clear — expect a weaker link than the distance alone suggests.",
+                )
+                LosTerm(
+                    "Path loss (dB)",
+                    "How much signal is lost between the two points: free-space spreading, " +
+                        "ground reflection, and any diffraction over terrain. Shown red when " +
+                        "it exceeds the link budget.",
+                )
+                LosTerm(
+                    "Link budget",
+                    "TX power + antenna gains + receiver sensitivity, combined — the total " +
+                        "loss the link can survive. Taken from your node's radio config.",
+                )
+                LosTerm(
+                    "\"450m + 5m\"",
+                    "Ground elevation above sea level, plus the antenna's height above the " +
+                        "ground at that point.",
+                )
+                LosTerm(
+                    "∠ bearing",
+                    "Compass direction from that point toward the other one (0° = north).",
+                )
+                LosTerm(
+                    "Earth curvature",
+                    "Profiles are drawn with the standard 4/3-earth-radius correction, which " +
+                        "accounts for the bulge of the Earth and mild atmospheric bending — " +
+                        "that is why long paths need extra clearance in the middle.",
+                )
+            }
+        },
+    )
+}
+
+@Composable
+private fun LosTerm(term: String, explanation: String) {
+    Column {
+        Text(term, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        Text(
+            text = explanation,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
 
 @Composable
 private fun BoxScope.LosInfoBanner(text: String) {
