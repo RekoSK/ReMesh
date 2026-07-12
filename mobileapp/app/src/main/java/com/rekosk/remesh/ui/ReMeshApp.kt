@@ -36,6 +36,7 @@ import com.rekosk.remesh.ui.screens.AddContactScreen
 import com.rekosk.remesh.ui.screens.DiscoverContactsScreen
 import com.rekosk.remesh.ui.screens.DiscoverNearbyScreen
 import com.rekosk.remesh.ui.screens.MapLocationPickerScreen
+import com.rekosk.remesh.ui.screens.SignalCoverageScreen
 import com.rekosk.remesh.ui.screens.NoiseFloorScreen
 import com.rekosk.remesh.ui.screens.PacketLogScreen
 import com.rekosk.remesh.ui.screens.PathTraceScreen
@@ -117,6 +118,7 @@ private const val ROUTE_MAP_TRACE_RESULT = "tools/map_trace_result"
 private const val ROUTE_PACKET_LOG = "tools/packet_log"
 private const val ROUTE_DISCOVER_NEARBY = "tools/discover_nearby"
 private const val ROUTE_NOISE_FLOOR = "tools/noise_floor"
+private const val ROUTE_SIGNAL_COVERAGE = "tools/signal_coverage"
 
 /**
  * Route to a node's contact menu from a Discover list. Carries the derived contact id
@@ -461,6 +463,7 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                         onPacketLog = { navController.navigate(ROUTE_PACKET_LOG) },
                         onDiscoverNearby = { navController.navigate(ROUTE_DISCOVER_NEARBY) },
                         onNoiseFloor = { navController.navigate(ROUTE_NOISE_FLOOR) },
+                        onSignalCoverage = { navController.navigate(ROUTE_SIGNAL_COVERAGE) },
                     ),
                 )
             }
@@ -491,6 +494,7 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                 )
             }
             composable(ROUTE_NOISE_FLOOR) { NoiseFloorScreen(viewModel, back) }
+            composable(ROUTE_SIGNAL_COVERAGE) { SignalCoverageScreen(viewModel, back) }
             composable("$ROUTE_SHARE_CHANNEL/{channelIndex}") { entry ->
                 ShareChannelScreen(
                     viewModel = viewModel,

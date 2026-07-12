@@ -58,18 +58,27 @@ fun NodeType.label(): String = when (this) {
  * touch deeper so white glyphs stay legible on light cards, the dark set a touch
  * brighter for OLED black. Same index in both lists is the "same" colour.
  */
-private val AvatarPaletteLight = listOf(
+internal val AvatarPaletteLight = listOf(
     Color(0xFFE53935), Color(0xFFD81B60), Color(0xFF8E24AA), Color(0xFF5E35B1),
     Color(0xFF3949AB), Color(0xFF1E88E5), Color(0xFF039BE5), Color(0xFF00897B),
     Color(0xFF43A047), Color(0xFF7CB342), Color(0xFFFB8C00), Color(0xFFF4511E),
     Color(0xFF6D4C41), Color(0xFF546E7A),
 )
-private val AvatarPaletteDark = listOf(
+internal val AvatarPaletteDark = listOf(
     Color(0xFFEF5350), Color(0xFFEC407A), Color(0xFFAB47BC), Color(0xFF7E57C2),
     Color(0xFF5C6BC0), Color(0xFF42A5F5), Color(0xFF29B6F6), Color(0xFF26A69A),
     Color(0xFF66BB6A), Color(0xFF9CCC65), Color(0xFFFFA726), Color(0xFFFF7043),
     Color(0xFF8D6E63), Color(0xFF78909C),
 )
+
+/** Number of colours in the avatar/point palette. */
+const val PALETTE_SIZE = 14
+
+/** A specific palette colour by index (wraps), for user-chosen point colours. */
+fun avatarColorByIndex(index: Int, dark: Boolean): Color {
+    val palette = if (dark) AvatarPaletteDark else AvatarPaletteLight
+    return palette[((index % palette.size) + palette.size) % palette.size]
+}
 
 /**
  * Picks a stable palette colour for a node. The index is derived from the node's

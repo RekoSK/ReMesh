@@ -28,7 +28,12 @@ import com.rekosk.remesh.data.SavedNodeSummary
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.Contact
 import com.rekosk.remesh.data.model.ContactExtras
+import com.rekosk.remesh.data.coverage.CoverageDefaults
+import com.rekosk.remesh.data.coverage.CoverageEngine
+import com.rekosk.remesh.data.coverage.CoverageResult
+import com.rekosk.remesh.data.coverage.RadioParams
 import com.rekosk.remesh.data.model.ConversationSummary
+import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.DiscoveredNodeInfo
 import com.rekosk.remesh.data.model.LoggedPacket
 import com.rekosk.remesh.data.model.MeshMessage
@@ -606,6 +611,41 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         if (latE6 == 0 && lonE6 == 0) return null
         val self = selfLocation() ?: return null
         return haversineKm(self.first / 1e6, self.second / 1e6, latE6 / 1e6, lonE6 / 1e6)
+    }
+
+    // ---------------- signal coverage ----------------
+
+    private val coverageEngine = CoverageEngine()
+
+    val coveragePoints: StateFlow<List<CoveragePoint>> = repository.coveragePoints
+
+    fun addCoveragePoint(latE6: Int, lonE6: Int): String = repository.addCoveragePoint(latE6, lonE6)
+
+    fun updateCoveragePoint(
+        id: String,
+        label: String? = null,
+        colorIndex: Int? = null,
+        enabled: Boolean? = null,
+    ) = repository.updateCoveragePoint(id, label, colorIndex, enabled)
+
+    fun removeCoveragePoint(id: String) = repository.removeCoveragePoint(id)
+
+    /**
+     * Computes a terrain signal-coverage heatmap for a point, tinted [baseColorArgb]. Heavy
+     * (elevation network fetch + propagation math); returns null on failure. Radio parameters
+     * come from the connected node when available, else sane MeshCore defaults.
+     */
+    suspend fun computeCoverage(latE6: Int, lonE6: Int, baseColorArgb: Int): CoverageResult? {
+        val self = repository.selfInfo.value
+        val params = RadioParams(
+            freqMHz = self?.radioFreqKhz?.let { it / 1000.0 } ?: CoverageDefaults.DEFAULT_FREQ_MHZ,
+            txPowerDbm = self?.txPower?.toDouble() ?: CoverageDefaults.DEFAULT_TX_DBM,
+            sensitivityDbm = self?.let { CoverageDefaults.sensitivityDbm(it.spreadingFactor, it.radioBandwidthHz) }
+                ?: CoverageDefaults.DEFAULT_SENS_DBM,
+        )
+        return runCatching {
+            coverageEngine.compute(latE6 / 1e6, lonE6 / 1e6, params, baseColorArgb)
+        }.getOrNull()
     }
 
     fun setSelfLocation(latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {

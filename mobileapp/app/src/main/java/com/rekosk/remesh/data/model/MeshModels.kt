@@ -94,6 +94,20 @@ enum class DeliveryState {
 }
 
 /**
+ * A user-placed point on the Signal-coverage map. Each has a palette colour and can be
+ * enabled/disabled; its terrain signal coverage is computed on demand. Local-only (per node).
+ */
+data class CoveragePoint(
+    val id: String,
+    val label: String,
+    val latE6: Int,
+    val lonE6: Int,
+    /** Index into the avatar palette (see `avatarColorByIndex`). */
+    val colorIndex: Int,
+    val enabled: Boolean = true,
+)
+
+/**
  * A repeater our own node overheard forwarding one of our messages.
  *
  * [hashHex] is the key prefix that repeater appended to the packet's path: one to

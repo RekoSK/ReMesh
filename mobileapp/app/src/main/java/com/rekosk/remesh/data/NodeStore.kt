@@ -4,6 +4,7 @@ import android.content.Context
 import com.rekosk.remesh.data.model.Channel
 import com.rekosk.remesh.data.model.ChannelKind
 import com.rekosk.remesh.data.model.Contact
+import com.rekosk.remesh.data.model.CoveragePoint
 import com.rekosk.remesh.data.model.DeliveryState
 import com.rekosk.remesh.data.model.HeardRepeat
 import com.rekosk.remesh.data.model.MeshMessage
@@ -52,6 +53,8 @@ data class PersistedNode(
     val readMarks: Map<String, Long> = emptyMap(),
     /** Location updates made while offline, waiting to be pushed on the next handshake. */
     val pendingLocations: List<PersistedPendingLocation> = emptyList(),
+    /** User-placed signal-coverage points (local only). */
+    val coveragePoints: List<PersistedCoveragePoint> = emptyList(),
 )
 
 /** A queued location update: [target] is "self" or a contact id; coords in 1e-6 degrees. */
@@ -60,6 +63,17 @@ data class PersistedPendingLocation(
     val target: String,
     val latE6: Int,
     val lonE6: Int,
+)
+
+/** A saved signal-coverage point; coords in 1e-6 degrees, colour is a palette index. */
+@Serializable
+data class PersistedCoveragePoint(
+    val id: String,
+    val label: String,
+    val latE6: Int,
+    val lonE6: Int,
+    val colorIndex: Int,
+    val enabled: Boolean = true,
 )
 
 @Serializable
@@ -240,6 +254,12 @@ fun MeshMessage.toPersisted(): PersistedMessage = PersistedMessage(
         PersistedMessageRoute(it.pathHashesHex, it.snr, it.rssi)
     },
 )
+
+fun CoveragePoint.toPersisted(): PersistedCoveragePoint =
+    PersistedCoveragePoint(id, label, latE6, lonE6, colorIndex, enabled)
+
+fun PersistedCoveragePoint.toDomain(): CoveragePoint =
+    CoveragePoint(id, label, latE6, lonE6, colorIndex, enabled)
 
 private fun hexToBytes(hex: String): ByteArray =
     ByteArray(hex.length / 2) { hex.substring(it * 2, it * 2 + 2).toInt(16).toByte() }

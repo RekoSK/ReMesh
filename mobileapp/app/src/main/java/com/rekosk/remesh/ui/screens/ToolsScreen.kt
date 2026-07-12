@@ -45,6 +45,7 @@ data class ToolsNav(
     val onPacketLog: () -> Unit,
     val onDiscoverNearby: () -> Unit,
     val onNoiseFloor: () -> Unit,
+    val onSignalCoverage: () -> Unit,
 )
 
 /**
@@ -94,7 +95,7 @@ fun ToolsScreen(onBack: () -> Unit, nav: ToolsNav) {
                 icon = Icons.Filled.Wifi,
                 title = "Signal coverage",
                 subtitle = "Check coverage on the map.",
-                enabled = false,
+                onClick = nav.onSignalCoverage,
             )
             ToolRow(
                 icon = Icons.Filled.Visibility,
