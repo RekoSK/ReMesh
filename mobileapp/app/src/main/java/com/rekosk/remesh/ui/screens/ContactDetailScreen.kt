@@ -266,10 +266,11 @@ fun ContactDetailScreen(
 
             SectionHeader("Location")
             MenuCard {
-                val lat = extras?.latitude
-                val lon = extras?.longitude
-                val positionText = if (lat != null && lon != null) {
-                    "%.4f, %.4f".format(lat, lon)
+                // Read the domain contact (persisted, works offline — the same source the Map
+                // screen uses), not the connection-only raw record.
+                val hasPosition = current.latE6 != 0 || current.lonE6 != 0
+                val positionText = if (hasPosition) {
+                    "%.4f, %.4f".format(current.latE6 / 1e6, current.lonE6 / 1e6)
                 } else {
                     "Unknown"
                 }
@@ -292,7 +293,8 @@ fun ContactDetailScreen(
                 MenuRowDivider()
                 InfoRow(
                     "Distance",
-                    extras?.distanceKm?.let { "%.2f km / %.2f mi".format(it, it * 0.621371) } ?: "Unknown",
+                    viewModel.distanceKmTo(current.latE6, current.lonE6)
+                        ?.let { "%.2f km / %.2f mi".format(it, it * 0.621371) } ?: "Unknown",
                 )
             }
 

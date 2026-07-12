@@ -1809,14 +1809,25 @@ class MeshRepository(
      * pushes it now; offline: queues it (persisted) and updates the shown value optimistically.
      */
     suspend fun setContactLocation(contactId: String, latE6: Int, lonE6: Int): String? {
-        val raw = rawContactById(contactId) ?: return "Unknown contact"
         if (connectionState.value !is ConnectionState.Ready) {
+            // Offline: queue it, and optimistically update the domain contact (what the
+            // detail row and the map read) plus the raw record if we happen to hold it.
             queueLocation(contactId, latE6, lonE6)
+            _contacts.update { list ->
+                list.map {
+                    if (it.id == contactId) {
+                        it.copy(latE6 = latE6, lonE6 = lonE6, hasLocation = latE6 != 0 || lonE6 != 0)
+                    } else {
+                        it
+                    }
+                }
+            }
             _rawContacts.update { list ->
                 list.map { if (contactConversationId(it.keyPrefix) == contactId) it.copy(latE6 = latE6, lonE6 = lonE6) else it }
             }
             return null
         }
+        val raw = rawContactById(contactId) ?: return "Unknown contact"
         val error = pushContactLocation(raw, latE6, lonE6)
         if (error == null) {
             clearPendingLocation(contactId)

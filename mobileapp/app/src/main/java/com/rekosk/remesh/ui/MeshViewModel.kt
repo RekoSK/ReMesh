@@ -591,10 +591,22 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return repository.selfPosition.value?.let { it.latE6 to it.lonE6 }
     }
 
-    /** A contact's stored position in 1e-6 degrees, or null when unknown. */
+    /**
+     * A contact's stored position in 1e-6 degrees, or null when unknown. Reads the domain
+     * contact (persisted, available offline — the same source the Map screen uses) rather
+     * than the connection-only raw record.
+     */
     fun contactLocation(contactId: String): Pair<Int, Int>? =
-        repository.rawContactById(contactId)?.takeIf { it.latE6 != 0 || it.lonE6 != 0 }
+        repository.contacts.value.firstOrNull { it.id == contactId }
+            ?.takeIf { it.latE6 != 0 || it.lonE6 != 0 }
             ?.let { it.latE6 to it.lonE6 }
+
+    /** Great-circle distance in km from our node to the given point, or null if either is unknown. */
+    fun distanceKmTo(latE6: Int, lonE6: Int): Double? {
+        if (latE6 == 0 && lonE6 == 0) return null
+        val self = selfLocation() ?: return null
+        return haversineKm(self.first / 1e6, self.second / 1e6, latE6 / 1e6, lonE6 / 1e6)
+    }
 
     fun setSelfLocation(latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {
         viewModelScope.launch {
