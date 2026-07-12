@@ -330,6 +330,9 @@ class MeshRepository(
         }
         // Feeds the settings screens. refreshNodeExtras takes no lock of its own.
         refreshNodeExtras()
+        // Now that the clock is set and contacts/channels are loaded, transmit anything
+        // the user queued while this node was offline.
+        flushQueuedMessages()
     }
 
     /**
@@ -1197,45 +1200,28 @@ class MeshRepository(
         val body = text.trim()
         if (body.isEmpty()) return
         if (connectionState.value !is ConnectionState.Ready) {
-            _lastError.value = "Not connected to a node"
+            // Offline: queue it. It is persisted, shown with a clock, and transmitted
+            // automatically after the next handshake (see flushQueuedMessages).
+            append(
+                conversationId,
+                MeshMessage(
+                    id = "local-${System.nanoTime()}",
+                    author = _selfName.value ?: "You",
+                    text = body,
+                    timestampEpochMs = System.currentTimeMillis(),
+                    isOutgoing = true,
+                    deliveryState = DeliveryState.QUEUED,
+                ),
+            )
             return
         }
         val epochSec = System.currentTimeMillis() / 1000
-
         try {
-            val accepted: Boolean
-            var onAirPayload: ByteArray? = null
-            var expectedAck: Long? = null
-
-            if (conversationId.startsWith(CHANNEL_PREFIX)) {
-                val index = conversationId.removePrefix(CHANNEL_PREFIX).toInt()
-                // Worked out before the send: after it, the node has already begun
-                // transmitting and a repeat could reach us at any moment.
-                onAirPayload = expectedChannelPayload(index, body, epochSec)
-                val reply = client.command(
-                    MeshCoreProtocol.encodeSendChannelTextMessage(index, body, epochSec),
-                    // Firmware answers writeOKFrame() here, not RESP_CODE_SENT.
-                    isTerminal = { it is MeshFrame.Ok || it is MeshFrame.Error },
-                ).last()
-                accepted = reply is MeshFrame.Ok
-            } else {
-                val prefix = contactKeys[conversationId]
-                    ?: run { _lastError.value = "Unknown contact"; return }
-                val reply = client.command(
-                    MeshCoreProtocol.encodeSendTextMessage(prefix, body, epochSec),
-                    isTerminal = { it is MeshFrame.Sent || it is MeshFrame.Error },
-                ).last()
-                accepted = reply is MeshFrame.Sent
-                // The node tells us the ack it will forward on delivery; a matching
-                // SEND_CONFIRMED later is the DM's second tick.
-                expectedAck = (reply as? MeshFrame.Sent)?.expectedAck
-            }
-
-            if (!accepted) {
+            val result = transmit(conversationId, body, epochSec)
+            if (!result.accepted) {
                 _lastError.value = "Node rejected the message"
                 return
             }
-
             val messageId = "local-${System.nanoTime()}"
             append(
                 conversationId,
@@ -1250,16 +1236,73 @@ class MeshRepository(
                     deliveryState = DeliveryState.SENT,
                 ),
             )
-            onAirPayload?.let { payload ->
-                synchronized(sentPayloads) {
-                    sentPayloads[payload.toHex()] = SentMessage(conversationId, messageId)
-                }
-            }
-            expectedAck?.let { ack ->
-                synchronized(pendingAcks) { pendingAcks[ack] = SentMessage(conversationId, messageId) }
-            }
+            registerSendTracking(result, conversationId, messageId)
         } catch (e: MeshBleException) {
             _lastError.value = e.message
+        }
+    }
+
+    private data class TransmitResult(
+        val accepted: Boolean,
+        val onAirPayload: ByteArray?,
+        val expectedAck: Long?,
+    )
+
+    /** Puts one message on the air. Shared by [send] and [flushQueuedMessages]. */
+    private suspend fun transmit(conversationId: String, body: String, epochSec: Long): TransmitResult {
+        if (conversationId.startsWith(CHANNEL_PREFIX)) {
+            val index = conversationId.removePrefix(CHANNEL_PREFIX).toInt()
+            // Worked out before the send: after it, the node has already begun
+            // transmitting and a repeat could reach us at any moment.
+            val onAirPayload = expectedChannelPayload(index, body, epochSec)
+            val reply = client.command(
+                MeshCoreProtocol.encodeSendChannelTextMessage(index, body, epochSec),
+                // Firmware answers writeOKFrame() here, not RESP_CODE_SENT.
+                isTerminal = { it is MeshFrame.Ok || it is MeshFrame.Error },
+            ).last()
+            return TransmitResult(reply is MeshFrame.Ok, onAirPayload, null)
+        }
+        val prefix = contactKeys[conversationId]
+            ?: run { _lastError.value = "Unknown contact"; return TransmitResult(false, null, null) }
+        val reply = client.command(
+            MeshCoreProtocol.encodeSendTextMessage(prefix, body, epochSec),
+            isTerminal = { it is MeshFrame.Sent || it is MeshFrame.Error },
+        ).last()
+        // The node tells us the ack it will forward on delivery; a matching
+        // SEND_CONFIRMED later is the DM's second tick.
+        return TransmitResult(reply is MeshFrame.Sent, null, (reply as? MeshFrame.Sent)?.expectedAck)
+    }
+
+    private fun registerSendTracking(result: TransmitResult, conversationId: String, messageId: String) {
+        result.onAirPayload?.let { payload ->
+            synchronized(sentPayloads) {
+                sentPayloads[payload.toHex()] = SentMessage(conversationId, messageId)
+            }
+        }
+        result.expectedAck?.let { ack ->
+            synchronized(pendingAcks) { pendingAcks[ack] = SentMessage(conversationId, messageId) }
+        }
+    }
+
+    /**
+     * Transmits every message composed while offline (oldest first), turning its clock
+     * into the sent tick. Called once the handshake has set the device clock and loaded
+     * this node's contacts/channels. A queued message deleted before we reconnected is
+     * simply skipped, so it is never sent.
+     */
+    private suspend fun flushQueuedMessages() {
+        if (connectionState.value !is ConnectionState.Ready) return
+        val queued = _messages.value
+            .flatMap { (conv, msgs) -> msgs.filter { it.deliveryState == DeliveryState.QUEUED }.map { conv to it } }
+            .sortedBy { it.second.timestampEpochMs }
+        for ((conv, msg) in queued) {
+            if (_messages.value[conv]?.any { it.id == msg.id } != true) continue
+            val epochSec = System.currentTimeMillis() / 1000
+            val result = runCatching { transmit(conv, msg.text, epochSec) }.getOrNull() ?: continue
+            if (!result.accepted) continue // keep it queued for the next connection
+            // Keep the message where it sits (its compose time); just earn the sent tick.
+            updateMessage(conv, msg.id) { it.copy(deliveryState = DeliveryState.SENT) }
+            registerSendTracking(result, conv, msg.id)
         }
     }
 

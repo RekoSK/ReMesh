@@ -85,6 +85,12 @@ enum class DeliveryState {
      * this will instead mean the recipient acked it.
      */
     CONFIRMED,
+
+    /**
+     * Composed while the node was offline. Persisted to disk and transmitted
+     * automatically after the next successful handshake; deleting it first cancels it.
+     */
+    QUEUED,
 }
 
 /**

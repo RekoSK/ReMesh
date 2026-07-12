@@ -29,7 +29,9 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -140,6 +143,7 @@ fun ChatScreen(
 
     var draft by remember { mutableStateOf(TextFieldValue()) }
     var selected by remember { mutableStateOf<MeshMessage?>(null) }
+    var confirmDelete by remember { mutableStateOf<MeshMessage?>(null) }
     val listState = rememberLazyListState()
     val inputFocus = remember { FocusRequester() }
 
@@ -170,8 +174,33 @@ fun ChatScreen(
                 onShowMessageRoutes(message.id)
             },
             onDelete = {
-                viewModel.deleteMessage(conversationId, message.id)
+                confirmDelete = message
                 selected = null
+            },
+        )
+    }
+
+    confirmDelete?.let { message ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete message?") },
+            text = {
+                Text(
+                    if (message.deliveryState == DeliveryState.QUEUED) {
+                        "This queued message hasn't been sent yet — deleting it cancels it."
+                    } else {
+                        "This removes the message from this device."
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteMessage(conversationId, message.id)
+                    confirmDelete = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = null }) { Text("Cancel") }
             },
         )
     }
@@ -428,6 +457,16 @@ internal fun incomingFooterText(
 private fun DeliveryTicks(state: DeliveryState, repeaterCount: Int) {
     if (state == DeliveryState.PENDING) return
     val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    // Queued while offline: a clock until the node connects and it is transmitted.
+    if (state == DeliveryState.QUEUED) {
+        Icon(
+            imageVector = Icons.Filled.Schedule,
+            contentDescription = "Queued — will send when the node connects",
+            tint = tint,
+            modifier = Modifier.size(14.dp),
+        )
+        return
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = Icons.Filled.Check,
