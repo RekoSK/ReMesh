@@ -134,6 +134,11 @@ class MeshRepository(
     private val _selfPosition = MutableStateFlow<SelfPosition?>(null)
     val selfPosition: StateFlow<SelfPosition?> = _selfPosition.asStateFlow()
 
+    // Location updates set while offline: persisted and pushed to the node on reconnect.
+    // A latE6/lonE6 pair keyed by target: PENDING_SELF for our own node, else a contact id.
+    private val _pendingLocations = MutableStateFlow<Map<String, Pair<Int, Int>>>(emptyMap())
+    val pendingLocations: StateFlow<Map<String, Pair<Int, Int>>> = _pendingLocations.asStateFlow()
+
     private val _deviceInfo = MutableStateFlow<MeshFrame.DeviceInfo?>(null)
     val deviceInfo: StateFlow<MeshFrame.DeviceInfo?> = _deviceInfo.asStateFlow()
 
@@ -333,6 +338,7 @@ class MeshRepository(
         // Now that the clock is set and contacts/channels are loaded, transmit anything
         // the user queued while this node was offline.
         flushQueuedMessages()
+        flushQueuedLocationUpdates()
     }
 
     /**
@@ -1622,6 +1628,9 @@ class MeshRepository(
         _selfPosition.value = node
             ?.takeIf { it.selfLatE6 != 0 || it.selfLonE6 != 0 }
             ?.let { SelfPosition(it.name, it.selfLatE6, it.selfLonE6) }
+        _pendingLocations.value = node?.pendingLocations
+            ?.associate { it.target to (it.latE6 to it.lonE6) }
+            .orEmpty()
         // Rebuild the id -> key-prefix map from the ids themselves, so a contact opened
         // offline still resolves (sending stays blocked until connected regardless).
         contactKeys.clear()
@@ -1654,6 +1663,9 @@ class MeshRepository(
             adverts = _recentAdverts.value.map { it.toPersisted() },
             messages = _messages.value.mapValues { (_, list) -> list.map { it.toPersisted() } },
             readMarks = _readMarks.value,
+            pendingLocations = _pendingLocations.value.map { (target, c) ->
+                PersistedPendingLocation(target, c.first, c.second)
+            },
         )
         _savedNodes.value = summaries()
         return savedNodesByKey.values.toList()
@@ -1770,6 +1782,99 @@ class MeshRepository(
         return error
     }
 
+    // ---------------- node location (self + contacts) ----------------
+
+    /**
+     * Sets our own node's advertised position. Connected: pushes it now. Offline: queues it
+     * (persisted), shows it optimistically, and it is sent on the next handshake.
+     */
+    suspend fun setSelfLocation(latE6: Int, lonE6: Int): String? {
+        if (connectionState.value !is ConnectionState.Ready) {
+            queueLocation(PENDING_SELF, latE6, lonE6)
+            _selfPosition.value = SelfPosition(_selfName.value.orEmpty(), latE6, lonE6)
+            return null
+        }
+        val error = write("Location") {
+            client.commandSingle(MeshCoreProtocol.encodeSetAdvertLatLon(latE6, lonE6))
+        }
+        if (error == null) {
+            clearPendingLocation(PENDING_SELF)
+            refreshSelfInfo()
+        }
+        return error
+    }
+
+    /**
+     * Sets a contact's stored position on the node, preserving its route/name. Connected:
+     * pushes it now; offline: queues it (persisted) and updates the shown value optimistically.
+     */
+    suspend fun setContactLocation(contactId: String, latE6: Int, lonE6: Int): String? {
+        val raw = rawContactById(contactId) ?: return "Unknown contact"
+        if (connectionState.value !is ConnectionState.Ready) {
+            queueLocation(contactId, latE6, lonE6)
+            _rawContacts.update { list ->
+                list.map { if (contactConversationId(it.keyPrefix) == contactId) it.copy(latE6 = latE6, lonE6 = lonE6) else it }
+            }
+            return null
+        }
+        val error = pushContactLocation(raw, latE6, lonE6)
+        if (error == null) {
+            clearPendingLocation(contactId)
+            loadContacts()
+        }
+        return error
+    }
+
+    private suspend fun pushContactLocation(raw: MeshFrame.Contact, latE6: Int, lonE6: Int): String? =
+        write("Location") {
+            client.commandSingle(
+                MeshCoreProtocol.encodeAddUpdateContact(
+                    publicKey = raw.publicKey,
+                    type = raw.type,
+                    flags = raw.flags,
+                    outPathLen = raw.outPathLen,
+                    outPath = raw.outPath,
+                    name = raw.name,
+                    lastAdvertEpochSec = raw.lastAdvertEpochSec,
+                    latE6 = latE6,
+                    lonE6 = lonE6,
+                    lastModEpochSec = System.currentTimeMillis() / 1000,
+                ),
+            )
+        }
+
+    private fun queueLocation(target: String, latE6: Int, lonE6: Int) {
+        _pendingLocations.update { it + (target to (latE6 to lonE6)) }
+        requestSave()
+    }
+
+    private fun clearPendingLocation(target: String) {
+        if (target in _pendingLocations.value) {
+            _pendingLocations.update { it - target }
+            requestSave()
+        }
+    }
+
+    /** Pushes locations queued while offline, once the handshake has the node ready. */
+    private suspend fun flushQueuedLocationUpdates() {
+        if (connectionState.value !is ConnectionState.Ready) return
+        if (_pendingLocations.value.isEmpty()) return
+        for ((target, coords) in _pendingLocations.value) {
+            val (latE6, lonE6) = coords
+            val error = if (target == PENDING_SELF) {
+                write("Location") {
+                    client.commandSingle(MeshCoreProtocol.encodeSetAdvertLatLon(latE6, lonE6))
+                }
+            } else {
+                val raw = rawContactById(target) ?: run { clearPendingLocation(target); continue }
+                pushContactLocation(raw, latE6, lonE6)
+            }
+            if (error == null) clearPendingLocation(target)
+        }
+        loadContacts()
+        refreshSelfInfo()
+    }
+
     /** Deletes a contact from the node and forgets it locally. */
     suspend fun removeContact(contactId: String): String? {
         val key = pubKeyOf(contactId) ?: return "Unknown contact"
@@ -1815,6 +1920,9 @@ class MeshRepository(
     companion object {
         const val CHANNEL_PREFIX = "ch:"
         const val CONTACT_PREFIX = "c:"
+
+        /** [pendingLocations] key for our own node's queued location. */
+        const val PENDING_SELF = "self"
 
         /** `MAX_GROUP_CHANNELS` in the firmware. DEVICE_INFO may report fewer. */
         const val MAX_CHANNEL_SLOTS = 8

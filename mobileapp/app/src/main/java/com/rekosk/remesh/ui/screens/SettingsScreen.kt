@@ -105,7 +105,7 @@ fun SettingsScreen(
     viewModel: MeshViewModel,
     onBack: () -> Unit,
     onOpenShareQr: () -> Unit,
-    onOpenMap: () -> Unit,
+    onEditSelfLocation: () -> Unit,
     nav: SettingsNav,
     modifier: Modifier = Modifier,
 ) {
@@ -288,7 +288,7 @@ fun SettingsScreen(
                         lonText = "0.000000"
                     },
                     onShareQr = onOpenShareQr,
-                    onOpenMap = onOpenMap,
+                    onPickLocation = onEditSelfLocation,
                     onCopyKey = {
                         val hex = selfInfo?.publicKey?.toHex()
                         if (hex == null) showMessage("Not connected to a node")
@@ -391,7 +391,7 @@ private fun PublicInfoSection(
     onShareLocationChange: (Boolean) -> Unit,
     onClearLocation: () -> Unit,
     onShareQr: () -> Unit,
-    onOpenMap: () -> Unit,
+    onPickLocation: () -> Unit,
     onCopyKey: () -> Unit,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -498,8 +498,8 @@ private fun PublicInfoSection(
                 keyboardType = KeyboardType.Decimal,
                 modifier = Modifier.weight(1f),
             )
-            IconButton(onClick = onOpenMap) {
-                Icon(Icons.Filled.Map, contentDescription = "Show on map")
+            IconButton(onClick = onPickLocation) {
+                Icon(Icons.Filled.Map, contentDescription = "Set location on map")
             }
         }
         RowDivider()

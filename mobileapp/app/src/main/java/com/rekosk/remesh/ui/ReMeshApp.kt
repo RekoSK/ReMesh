@@ -35,6 +35,7 @@ import com.rekosk.remesh.ui.screens.AddChannelScreen
 import com.rekosk.remesh.ui.screens.AddContactScreen
 import com.rekosk.remesh.ui.screens.DiscoverContactsScreen
 import com.rekosk.remesh.ui.screens.DiscoverNearbyScreen
+import com.rekosk.remesh.ui.screens.MapLocationPickerScreen
 import com.rekosk.remesh.ui.screens.NoiseFloorScreen
 import com.rekosk.remesh.ui.screens.PacketLogScreen
 import com.rekosk.remesh.ui.screens.PathTraceScreen
@@ -80,6 +81,8 @@ private const val ROUTE_MAP = "map"
 private const val ROUTE_CHAT = "chat"
 private const val ROUTE_CONTACT_DETAIL = "contact"
 private const val ROUTE_SET_ROUTE = "set_route"
+private const val ROUTE_PICK_SELF_LOCATION = "location_picker/self"
+private const val ROUTE_PICK_CONTACT_LOCATION = "location_picker/contact"
 private const val ROUTE_CONNECT = "connect"
 private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_SHARE_QR = "share_qr"
@@ -257,8 +260,7 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     viewModel = viewModel,
                     onBack = { navController.popBackStack() },
                     onOpenShareQr = { navController.navigate(ROUTE_SHARE_QR) },
-                    // The map itself is still the "Coming soon" placeholder.
-                    onOpenMap = { navController.navigate(ROUTE_MAP) },
+                    onEditSelfLocation = { navController.navigate(ROUTE_PICK_SELF_LOCATION) },
                     nav = SettingsNav(
                         onIdentityKey = { navController.navigate(ROUTE_IDENTITY_KEY) },
                         onBluetooth = { navController.navigate(ROUTE_BLUETOOTH) },
@@ -319,10 +321,38 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     contactId = id,
                     onBack = { navController.popBackStack() },
                     onEditRoute = { navController.navigate("$ROUTE_SET_ROUTE/$id") },
+                    onEditLocation = { navController.navigate("$ROUTE_PICK_CONTACT_LOCATION/$id") },
                     onSendMessage = { navController.navigate("$ROUTE_CHAT/$id") },
                     unknownName = entry.arguments?.getString("nm"),
                     unknownPublicKeyHex = entry.arguments?.getString("pk"),
                     unknownAdvType = entry.arguments?.getInt("advType") ?: 0,
+                )
+            }
+            composable(ROUTE_PICK_SELF_LOCATION) {
+                val (lat, lon) = viewModel.selfLocation() ?: (0 to 0)
+                MapLocationPickerScreen(
+                    initialLatE6 = lat,
+                    initialLonE6 = lon,
+                    title = "Set your node's location",
+                    onBack = { navController.popBackStack() },
+                    onConfirm = { newLat, newLon ->
+                        viewModel.setSelfLocation(newLat, newLon) {}
+                        navController.popBackStack()
+                    },
+                )
+            }
+            composable("$ROUTE_PICK_CONTACT_LOCATION/{contactId}") { entry ->
+                val id = entry.arguments?.getString("contactId").orEmpty()
+                val (lat, lon) = viewModel.contactLocation(id) ?: (0 to 0)
+                MapLocationPickerScreen(
+                    initialLatE6 = lat,
+                    initialLonE6 = lon,
+                    title = "Set contact location",
+                    onBack = { navController.popBackStack() },
+                    onConfirm = { newLat, newLon ->
+                        viewModel.setContactLocation(id, newLat, newLon) {}
+                        navController.popBackStack()
+                    },
                 )
             }
             composable("$ROUTE_SET_ROUTE/{contactId}") { entry ->

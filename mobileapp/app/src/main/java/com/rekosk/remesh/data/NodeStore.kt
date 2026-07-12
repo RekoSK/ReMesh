@@ -50,6 +50,16 @@ data class PersistedNode(
     val messages: Map<String, List<PersistedMessage>> = emptyMap(),
     /** Conversation id -> epoch-ms it was last read, for unread counts. */
     val readMarks: Map<String, Long> = emptyMap(),
+    /** Location updates made while offline, waiting to be pushed on the next handshake. */
+    val pendingLocations: List<PersistedPendingLocation> = emptyList(),
+)
+
+/** A queued location update: [target] is "self" or a contact id; coords in 1e-6 degrees. */
+@Serializable
+data class PersistedPendingLocation(
+    val target: String,
+    val latE6: Int,
+    val lonE6: Int,
 )
 
 @Serializable

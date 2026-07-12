@@ -20,7 +20,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
@@ -81,6 +83,7 @@ fun ContactDetailScreen(
     contactId: String,
     onBack: () -> Unit,
     onEditRoute: () -> Unit,
+    onEditLocation: () -> Unit,
     onSendMessage: () -> Unit,
     unknownName: String? = null,
     unknownPublicKeyHex: String? = null,
@@ -88,7 +91,8 @@ fun ContactDetailScreen(
 ) {
     val contact by viewModel.contactFlow(contactId).collectAsStateWithLifecycle()
     val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
-    val extras = remember(contact) { viewModel.contactExtras(contactId) }
+    val pendingLocations by viewModel.pendingLocations.collectAsStateWithLifecycle()
+    val extras = remember(contact, pendingLocations) { viewModel.contactExtras(contactId) }
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val snackbar = remember { SnackbarHostState() }
@@ -251,14 +255,6 @@ fun ContactDetailScreen(
                             toast("Public key copied")
                         }) { Icon(Icons.Filled.ContentCopy, contentDescription = "Copy") }
                     })
-                    if (ex.latitude != null && ex.longitude != null) {
-                        MenuRowDivider()
-                        InfoRow("Location", "%.4f, %.4f".format(ex.latitude, ex.longitude))
-                    }
-                    ex.distanceKm?.let { km ->
-                        MenuRowDivider()
-                        InfoRow("Distance", "%.2f km / %.2f mi".format(km, km * 0.621371))
-                    }
                 }
                 MenuRowDivider()
                 InfoRow("Contact type", current.type.label())
@@ -266,6 +262,38 @@ fun ContactDetailScreen(
                     MenuRowDivider()
                     InfoRow("Last captured advert", formatLastSeen(it))
                 }
+            }
+
+            SectionHeader("Location")
+            MenuCard {
+                val lat = extras?.latitude
+                val lon = extras?.longitude
+                val positionText = if (lat != null && lon != null) {
+                    "%.4f, %.4f".format(lat, lon)
+                } else {
+                    "Unknown"
+                }
+                InfoRow("Position", positionText, trailing = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (contactId in pendingLocations) {
+                            Icon(
+                                imageVector = Icons.Filled.Schedule,
+                                contentDescription = "Queued — will sync when the node connects",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                        IconButton(onClick = onEditLocation) {
+                            Icon(Icons.Filled.Map, contentDescription = "Set location on map")
+                        }
+                    }
+                })
+                MenuRowDivider()
+                InfoRow(
+                    "Distance",
+                    extras?.distanceKm?.let { "%.2f km / %.2f mi".format(it, it * 0.621371) } ?: "Unknown",
+                )
             }
 
             SectionHeader("Route")

@@ -579,6 +579,41 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return com.rekosk.remesh.data.MeshRepository.contactUri(raw.name, raw.publicKey, raw.type)
     }
 
+    // ---------------- node location ----------------
+
+    /** Location updates queued while offline, keyed by "self" or a contact id. */
+    val pendingLocations: StateFlow<Map<String, Pair<Int, Int>>> = repository.pendingLocations
+
+    /** Our node's current position in 1e-6 degrees, or null when unknown (for the picker pin). */
+    fun selfLocation(): Pair<Int, Int>? {
+        val self = repository.selfInfo.value
+        if (self != null && (self.latE6 != 0 || self.lonE6 != 0)) return self.latE6 to self.lonE6
+        return repository.selfPosition.value?.let { it.latE6 to it.lonE6 }
+    }
+
+    /** A contact's stored position in 1e-6 degrees, or null when unknown. */
+    fun contactLocation(contactId: String): Pair<Int, Int>? =
+        repository.rawContactById(contactId)?.takeIf { it.latE6 != 0 || it.lonE6 != 0 }
+            ?.let { it.latE6 to it.lonE6 }
+
+    fun setSelfLocation(latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.setSelfLocation(latE6, lonE6)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
+    fun setContactLocation(contactId: String, latE6: Int, lonE6: Int, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            _isBusy.value = true
+            val error = repository.setContactLocation(contactId, latE6, lonE6)
+            _isBusy.value = false
+            onResult(error)
+        }
+    }
+
     /** Fires a zero-hop ping; [onResult] gets a human-readable outcome line. */
     fun pingZeroHop(contactId: String, onResult: (PingResult) -> Unit) {
         viewModelScope.launch {
