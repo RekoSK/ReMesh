@@ -64,10 +64,22 @@ import com.rekosk.remesh.data.model.MeshMessage
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.MeshViewModel
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.drawscope.Stroke
+import com.rekosk.remesh.ui.components.MentionOutlineAmber
+import com.rekosk.remesh.ui.components.MentionOutlineDark
+import com.rekosk.remesh.ui.components.MentionText
+import com.rekosk.remesh.ui.components.MentionVisualTransformation
 import com.rekosk.remesh.ui.components.NodeAvatar
 import com.rekosk.remesh.ui.components.avatarColor
 import com.rekosk.remesh.ui.components.avatarGlyph
+import com.rekosk.remesh.ui.components.findActiveMention
 import com.rekosk.remesh.ui.components.formatMessageTime
+import com.rekosk.remesh.ui.components.insertMention
+import com.rekosk.remesh.ui.components.mentionsName
+import com.rekosk.remesh.ui.components.normalizeMentionTyping
+import com.rekosk.remesh.ui.components.rememberWavePhase
+import com.rekosk.remesh.ui.components.wavyRoundRectPath
 
 /**
  * Stable per-author colour for sender names and their message avatars, from the shared
@@ -105,6 +117,15 @@ fun ChatScreen(
     val contacts by viewModel.allContacts.collectAsStateWithLifecycle()
     val seedByName = remember(contacts) { contacts.associate { it.name to it.id } }
     val colorSeedFor: (String) -> String = { seedByName[it] ?: it }
+    // A name's "PFP colour", used for @-mention chips and the dropdown avatars.
+    val dark = isSystemInDarkTheme()
+    val colorForName: (String) -> Color = { avatarColor(colorSeedFor(it), dark) }
+    // Everyone who has posted in this chat (not me), for the @-mention dropdown.
+    val participants = remember(messages, selfName) {
+        messages.map { it.author }
+            .filter { it.isNotBlank() && !it.equals(selfName, ignoreCase = true) }
+            .distinct()
+    }
     // Firmware byte cap on what actually goes out: a DM sends the text alone
     // (MAX_TEXT_LEN); a channel sends "myName: text" capped at MAX_GROUP_TEXT_LEN,
     // so my node name eats into the room's budget.
@@ -135,7 +156,7 @@ fun ChatScreen(
             onReply = {
                 // MeshCore has no reply metadata on the wire; a mention is the whole
                 // convention, and it is what the reference app inserts too.
-                val mention = "@${message.author} "
+                val mention = "@[${message.author}] "
                 draft = TextFieldValue(mention, TextRange(mention.length))
                 selected = null
                 inputFocus.requestFocus()
@@ -210,9 +231,15 @@ fun ChatScreen(
         bottomBar = {
             MessageInput(
                 value = draft,
-                onValueChange = { draft = it },
+                onValueChange = { nv ->
+                    // Apply the space-confirm / backspace-revert tagging rules on every edit.
+                    val n = normalizeMentionTyping(nv.text, nv.selection.start)
+                    draft = if (n.text == nv.text) nv else TextFieldValue(n.text, TextRange(n.cursor))
+                },
                 focusRequester = inputFocus,
                 maxBytes = maxMessageBytes,
+                participants = participants,
+                colorForName = colorForName,
                 onSend = {
                     viewModel.send(conversationId, draft.text)
                     draft = TextFieldValue()
@@ -248,6 +275,8 @@ fun ChatScreen(
                         showHops = prefs.showChannelMessageHops,
                         showHashSize = prefs.showChannelPathHashSizes,
                         colorSeed = colorSeedFor(message.author),
+                        selfName = selfName,
+                        colorForName = colorForName,
                         onLongPress = { selected = message },
                     )
                 }
@@ -263,6 +292,8 @@ private fun MessageRow(
     showHops: Boolean,
     showHashSize: Boolean,
     colorSeed: String,
+    selfName: String?,
+    colorForName: (String) -> Color,
     onLongPress: () -> Unit,
 ) {
     val outgoing = message.isOutgoing
@@ -289,7 +320,7 @@ private fun MessageRow(
                     )
                     Spacer(Modifier.size(4.dp))
                 }
-                Bubble(message)
+                Bubble(message, selfName = selfName, colorForName = colorForName)
                 Spacer(Modifier.size(4.dp))
                 MessageFooter(message, showHops = showHops, showHashSize = showHashSize)
             }
@@ -315,8 +346,11 @@ private fun AuthorAvatar(author: String, colorSeed: String) {
 }
 
 @Composable
-private fun Bubble(message: MeshMessage) {
+private fun Bubble(message: MeshMessage, selfName: String?, colorForName: (String) -> Color) {
     val outgoing = message.isOutgoing
+    // An incoming bubble that tags me gets the animated "cloudy" amber/dark outline.
+    val taggedMe = !outgoing && mentionsName(message.text, selfName)
+    val phase = rememberWavePhase(taggedMe)
     Surface(
         color = if (outgoing) MaterialTheme.colorScheme.primaryContainer
         else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -326,14 +360,31 @@ private fun Bubble(message: MeshMessage) {
             bottomStart = if (outgoing) 18.dp else 4.dp,
             bottomEnd = if (outgoing) 4.dp else 18.dp,
         ),
-        modifier = Modifier.widthIn(max = 300.dp),
+        modifier = Modifier
+            .widthIn(max = 300.dp)
+            .then(
+                if (!taggedMe) Modifier else Modifier.drawWithContent {
+                    drawContent()
+                    val path = wavyRoundRectPath(
+                        w = size.width,
+                        h = size.height,
+                        cornerRadius = 16.dp.toPx(),
+                        amplitude = 2.5.dp.toPx(),
+                        waveLength = 12.dp.toPx(),
+                        phase = phase,
+                    )
+                    drawPath(path, MentionOutlineDark, style = Stroke(width = 4.dp.toPx()))
+                    drawPath(path, MentionOutlineAmber, style = Stroke(width = 2.dp.toPx()))
+                },
+            ),
     ) {
-        Text(
+        MentionText(
             text = message.text,
             style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
             color = if (outgoing) MaterialTheme.colorScheme.onPrimaryContainer
             else MaterialTheme.colorScheme.onSurface,
+            colorForName = colorForName,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
         )
     }
 }
@@ -409,11 +460,18 @@ private fun MessageInput(
     onValueChange: (TextFieldValue) -> Unit,
     focusRequester: FocusRequester,
     maxBytes: Int,
+    participants: List<String>,
+    colorForName: (String) -> Color,
     onSend: () -> Unit,
 ) {
     // The firmware truncates by UTF-8 bytes, so count bytes, not characters.
     val usedBytes = value.text.toByteArray(Charsets.UTF_8).size
     val over = usedBytes > maxBytes
+    // The @-token being typed, and the participants that match it.
+    val active = findActiveMention(value.text, value.selection.start)
+    val suggestions = if (active == null) emptyList() else {
+        participants.filter { it.contains(active.second, ignoreCase = true) }.take(6)
+    }
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column(
             modifier = Modifier
@@ -422,6 +480,48 @@ private fun MessageInput(
                 .imePadding()
                 .padding(horizontal = 8.dp, vertical = 8.dp),
         ) {
+            if (active != null && suggestions.isNotEmpty()) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                ) {
+                    Column {
+                        suggestions.forEach { name ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val (nt, nc) = insertMention(
+                                            value.text, active.first, value.selection.start, name,
+                                        )
+                                        onValueChange(TextFieldValue(nt, TextRange(nc)))
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(colorForName(name).copy(alpha = 0.22f)),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        text = avatarGlyph(name),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = colorForName(name),
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(name, style = MaterialTheme.typography.bodyLarge)
+                            }
+                        }
+                    }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = value,
@@ -434,6 +534,7 @@ private fun MessageInput(
                     shape = RoundedCornerShape(28.dp),
                     maxLines = 4,
                     isError = over,
+                    visualTransformation = MentionVisualTransformation(colorForName),
                 )
                 // Sending an over-length message would silently lose the tail, so block it.
                 IconButton(onClick = onSend, enabled = value.text.isNotBlank() && !over) {
