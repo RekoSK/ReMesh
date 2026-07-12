@@ -46,14 +46,14 @@ data class ToolsNav(
     val onDiscoverNearby: () -> Unit,
     val onNoiseFloor: () -> Unit,
     val onSignalCoverage: () -> Unit,
+    val onLineOfSight: () -> Unit,
 )
 
 /**
  * The eight diagnostics the reference app offers.
  *
- * Three of them plot onto a map and one needs region support, neither of which this
- * app has yet; they are listed but disabled, so the menu still matches and nothing
- * silently goes missing.
+ * Region discovery needs region support the app doesn't have yet; it is listed but
+ * disabled, so the menu still matches and nothing silently goes missing.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -101,7 +101,7 @@ fun ToolsScreen(onBack: () -> Unit, nav: ToolsNav) {
                 icon = Icons.Filled.Visibility,
                 title = "Line of sight",
                 subtitle = "Check line of sight on the map.",
-                enabled = false,
+                onClick = nav.onLineOfSight,
             )
             ToolRow(
                 icon = Icons.Filled.ReceiptLong,
