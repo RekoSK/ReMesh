@@ -32,8 +32,10 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -337,6 +339,7 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
             points = points,
             dark = dark,
             defaults = defaults,
+            computing = computing.values.any { it } || computingRepeaters.isNotEmpty(),
             onToggle = { id, on -> replacePoint(id) { it.copy(enabled = on) } },
             onColor = { id, idx -> replacePoint(id) { it.copy(colorIndex = idx) } },
             onParams = { id, tx, freq, ant, sens ->
@@ -350,12 +353,13 @@ fun SignalCoverageScreen(viewModel: MeshViewModel, onBack: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 private fun ManagePointsSheet(
     points: List<CoveragePoint>,
     dark: Boolean,
     defaults: RadioParams,
+    computing: Boolean,
     onToggle: (String, Boolean) -> Unit,
     onColor: (String, Int) -> Unit,
     onParams: (String, Double?, Double?, Double?, Double?) -> Unit,
@@ -369,11 +373,21 @@ private fun ManagePointsSheet(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = 24.dp),
         ) {
-            Text(
-                text = "Coverage points",
-                style = MaterialTheme.typography.titleLarge,
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-            )
+            ) {
+                Text(
+                    text = "Coverage points",
+                    style = MaterialTheme.typography.titleLarge,
+                )
+                // Edits made here recompute behind the sheet — surface that progress
+                // in the menu itself with the same themed loading shape.
+                if (computing) {
+                    Spacer(Modifier.width(12.dp))
+                    LoadingIndicator(modifier = Modifier.size(28.dp))
+                }
+            }
             if (points.isEmpty()) {
                 Text(
                     text = "No points yet — long-press the map to add one.",
