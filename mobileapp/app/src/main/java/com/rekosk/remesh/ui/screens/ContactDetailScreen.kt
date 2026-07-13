@@ -88,6 +88,10 @@ fun ContactDetailScreen(
     unknownName: String? = null,
     unknownPublicKeyHex: String? = null,
     unknownAdvType: Int = 0,
+    // A known position for the unknown node (1e-6 degrees; e.g. from the online map),
+    // saved onto the contact when it is added. 0/0 = unknown.
+    unknownLatE6: Int = 0,
+    unknownLonE6: Int = 0,
 ) {
     val contact by viewModel.contactFlow(contactId).collectAsStateWithLifecycle()
     val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
@@ -130,7 +134,9 @@ fun ContactDetailScreen(
 
     fun addUnknownContact(name: String) {
         val hex = unknownPublicKeyHex ?: return
-        viewModel.addContact(name, unknownAddType, hex) { error -> toast(error ?: "Added $name") }
+        viewModel.addContact(name, unknownAddType, hex, unknownLatE6, unknownLonE6) { error ->
+            toast(error ?: "Added $name")
+        }
     }
 
     val current = contact
@@ -406,17 +412,21 @@ fun ContactDetailScreen(
     if (showAdd) {
         TextEntryDialog(
             title = "Add to contacts",
-            initial = "",
-            label = "Custom name (optional)",
+            // The node's advertised name (e.g. from the online map) is the default;
+            // the generic "Repeater <hex>" is only the last resort for nameless nodes.
+            initial = unknownDisplayName.orEmpty(),
+            label = "Name",
             confirmLabel = "Add",
             onDismiss = { showAdd = false },
             onConfirm = { entered ->
                 showAdd = false
-                val fallback = when (unknownNodeType) {
-                    NodeType.ROOM -> "Room "
-                    NodeType.SENSOR -> "Sensor "
-                    else -> "Repeater "
-                } + unknownHex4
+                val fallback = unknownDisplayName ?: (
+                    when (unknownNodeType) {
+                        NodeType.ROOM -> "Room "
+                        NodeType.SENSOR -> "Sensor "
+                        else -> "Repeater "
+                    } + unknownHex4
+                    )
                 addUnknownContact(entered.ifBlank { fallback })
             },
         )

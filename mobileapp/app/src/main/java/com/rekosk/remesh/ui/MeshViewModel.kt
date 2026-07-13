@@ -83,6 +83,12 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     // Process-scoped: the connection notification service reads the same instance.
     private val repository = MeshContainer.repository(application)
 
+    init {
+        // Put the last node's saved data on screen and quietly reconnect when it's in
+        // range. Idempotent, so activity recreation doesn't stack loops.
+        repository.startAutoReconnect()
+    }
+
     private val _query = MutableStateFlow("")
     val query: StateFlow<String> = _query.asStateFlow()
 
@@ -525,8 +531,18 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     private val _isBusy = MutableStateFlow(false)
     val isBusy: StateFlow<Boolean> = _isBusy.asStateFlow()
 
-    /** [publicKeyHex] is the 64 hex characters of the node's identity key. */
-    fun addContact(name: String, type: Int, publicKeyHex: String, onResult: (String?) -> Unit) {
+    /**
+     * [publicKeyHex] is the 64 hex characters of the node's identity key. A non-zero
+     * [latE6]/[lonE6] (e.g. from the online map) is stored as the contact's position.
+     */
+    fun addContact(
+        name: String,
+        type: Int,
+        publicKeyHex: String,
+        latE6: Int = 0,
+        lonE6: Int = 0,
+        onResult: (String?) -> Unit,
+    ) {
         val key = runCatching { with(ChannelCrypto) { publicKeyHex.decodeHex() } }.getOrNull()
         if (key == null || key.size != MeshCoreProtocol.PUB_KEY_SIZE) {
             onResult("A public key is 64 hexadecimal characters")
@@ -534,7 +550,7 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             _isBusy.value = true
-            val error = repository.addContact(name, type, key)
+            val error = repository.addContact(name, type, key, latE6, lonE6)
             _isBusy.value = false
             onResult(error)
         }

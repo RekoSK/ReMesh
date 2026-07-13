@@ -128,7 +128,13 @@ private const val ROUTE_LINE_OF_SIGHT = "tools/line_of_sight"
  * unknown node can still render + be added. Mirrors MeshRepository's id scheme:
  * "c:" + first 6 bytes of the key, and AdvType ints CHAT=1/REPEATER=2/ROOM=3/SENSOR=4.
  */
-private fun nodeDetailRoute(publicKey: ByteArray, type: NodeType, name: String): String {
+private fun nodeDetailRoute(
+    publicKey: ByteArray,
+    type: NodeType,
+    name: String,
+    latE6: Int = 0,
+    lonE6: Int = 0,
+): String {
     fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
     val id = "c:" + publicKey.copyOfRange(0, 6).hex()
     val advType = when (type) {
@@ -137,7 +143,8 @@ private fun nodeDetailRoute(publicKey: ByteArray, type: NodeType, name: String):
         NodeType.SENSOR -> 4
         else -> 1
     }
-    return "$ROUTE_CONTACT_DETAIL/$id?pk=${publicKey.hex()}&advType=$advType&nm=${Uri.encode(name)}"
+    return "$ROUTE_CONTACT_DETAIL/$id?pk=${publicKey.hex()}&advType=$advType" +
+        "&nm=${Uri.encode(name)}&lat=$latE6&lon=$lonE6"
 }
 
 private enum class TopLevel(
@@ -246,7 +253,13 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                         val key = node.publicKeyHex.chunked(2)
                             .map { it.toInt(16).toByte() }
                             .toByteArray()
-                        navController.navigate(nodeDetailRoute(key, node.type, node.name))
+                        navController.navigate(
+                            nodeDetailRoute(
+                                key, node.type, node.name,
+                                latE6 = (node.latitude * 1e6).toInt(),
+                                lonE6 = (node.longitude * 1e6).toInt(),
+                            ),
+                        )
                     },
                 )
             }
@@ -320,11 +333,13 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                 )
             }
             composable(
-                "$ROUTE_CONTACT_DETAIL/{contactId}?pk={pk}&advType={advType}&nm={nm}",
+                "$ROUTE_CONTACT_DETAIL/{contactId}?pk={pk}&advType={advType}&nm={nm}&lat={lat}&lon={lon}",
                 arguments = listOf(
                     navArgument("pk") { type = NavType.StringType; nullable = true; defaultValue = null },
                     navArgument("advType") { type = NavType.IntType; defaultValue = 0 },
                     navArgument("nm") { type = NavType.StringType; nullable = true; defaultValue = null },
+                    navArgument("lat") { type = NavType.IntType; defaultValue = 0 },
+                    navArgument("lon") { type = NavType.IntType; defaultValue = 0 },
                 ),
             ) { entry ->
                 val id = entry.arguments?.getString("contactId").orEmpty()
@@ -338,6 +353,8 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     unknownName = entry.arguments?.getString("nm"),
                     unknownPublicKeyHex = entry.arguments?.getString("pk"),
                     unknownAdvType = entry.arguments?.getInt("advType") ?: 0,
+                    unknownLatE6 = entry.arguments?.getInt("lat") ?: 0,
+                    unknownLonE6 = entry.arguments?.getInt("lon") ?: 0,
                 )
             }
             composable(ROUTE_PICK_SELF_LOCATION) {

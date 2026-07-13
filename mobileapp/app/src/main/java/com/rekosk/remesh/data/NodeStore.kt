@@ -50,6 +50,7 @@ data class PersistedNode(
     val radioSpreadingFactor: Int = 0,
     val radioCodingRate: Int = 0,
     val radioTxPowerDbm: Int = 0,
+    val radioMaxTxPowerDbm: Int = 0,
     val contacts: List<PersistedContact> = emptyList(),
     val channels: List<PersistedChannel> = emptyList(),
     val adverts: List<PersistedAdvert> = emptyList(),

@@ -17,7 +17,7 @@ fun ScanContactQrScreen(viewModel: MeshViewModel, onBack: () -> Unit, onDone: ()
             if (shared == null) {
                 onResult("That QR code is not a MeshCore contact")
             } else {
-                viewModel.addContact(shared.name, shared.type, shared.publicKeyHex, onResult)
+                viewModel.addContact(shared.name, shared.type, shared.publicKeyHex, onResult = onResult)
             }
         },
     )

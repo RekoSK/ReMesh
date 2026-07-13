@@ -34,6 +34,7 @@ import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.Route
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
@@ -138,7 +139,10 @@ class MeshRepository(
             spreadingFactor = self.spreadingFactor,
             txPowerDbm = self.txPower,
             codingRate = self.codingRate,
+            maxTxPowerDbm = self.maxTxPower,
         )
+        // Persist promptly: the whole point is having the config before the next connect.
+        requestSave()
     }
 
     /**
@@ -274,12 +278,69 @@ class MeshRepository(
     fun startScan() = client.startScan()
     fun stopScan() = client.stopScan()
 
+    // ---------------- auto reconnect ----------------
+
+    private var autoReconnectJob: Job? = null
+
+    /** Set by a manual [disconnect], so we don't fight the user's explicit choice. */
+    @Volatile
+    private var autoReconnectSuppressed = false
+
+    /**
+     * Arms the "come back to my node" behaviour: the most recently connected node's saved
+     * data is put on screen right away (its offline values), and while there is no live
+     * link the phone scans for that node in duty cycles and connects the moment it is
+     * seen. Idempotent; a manual disconnect suppresses it until the next manual connect.
+     */
+    fun startAutoReconnect() {
+        if (autoReconnectJob?.isActive == true) return
+        autoReconnectJob = scope.launch {
+            // Show the last node's offline values immediately, before any link exists.
+            _savedNodes.value
+                .filter { it.address != null }
+                .maxByOrNull { it.lastConnectedEpochMs }
+                ?.takeIf { activeKey == null }
+                ?.let { openSavedNode(it.key) }
+
+            while (true) {
+                val target = _savedNodes.value
+                    .filter { it.address != null }
+                    .maxByOrNull { it.lastConnectedEpochMs }
+                val address = target?.address
+                val idle = connectionState.value.let {
+                    it is ConnectionState.Disconnected || it is ConnectionState.Failed ||
+                        it is ConnectionState.Scanning
+                }
+                if (address == null || !idle || autoReconnectSuppressed) {
+                    delay(5_000)
+                    continue
+                }
+                // One scan window; missing BLE permission etc. just means "try later".
+                if (runCatching { client.startScan() }.isFailure) {
+                    delay(15_000)
+                    continue
+                }
+                val seen = withTimeoutOrNull(20_000) {
+                    devices.first { list -> list.any { it.address == address } }
+                }
+                runCatching { client.stopScan() }
+                if (seen != null && !autoReconnectSuppressed) {
+                    // Connect + handshake; a failure simply leaves us in the loop.
+                    runCatching { connect(address) }
+                } else {
+                    delay(15_000) // node not around; rest between scan windows
+                }
+            }
+        }
+    }
+
     /** Asks the BLE stack for a fresh link-RSSI reading; result lands in [connectionRssi]. */
     fun readConnectionRssi() = client.readConnectionRssi()
     fun clearError() { _lastError.value = null }
 
     suspend fun connect(address: String) {
         _lastError.value = null
+        autoReconnectSuppressed = false
         currentAddress = address
         // A fresh link asks for the whole contact list, then merges it over whatever
         // was restored from disk for this node.
@@ -299,6 +360,8 @@ class MeshRepository(
      * the persisted view (contacts, channels, messages, adverts) stays put.
      */
     fun disconnect() {
+        // The user chose to drop the link; don't immediately dial it back up.
+        autoReconnectSuppressed = true
         client.disconnect()
         flushActive()
         contactKeys.clear()
@@ -1550,7 +1613,13 @@ class MeshRepository(
     }
 
     /** Adds a contact by hand, the way `CMD_ADD_UPDATE_CONTACT` expects it. */
-    suspend fun addContact(name: String, type: Int, publicKey: ByteArray): String? {
+    suspend fun addContact(
+        name: String,
+        type: Int,
+        publicKey: ByteArray,
+        latE6: Int = 0,
+        lonE6: Int = 0,
+    ): String? {
         if (publicKey.size != MeshCoreProtocol.PUB_KEY_SIZE) {
             return "A public key is 64 hexadecimal characters"
         }
@@ -1567,8 +1636,9 @@ class MeshRepository(
                     outPath = ByteArray(0),
                     name = name.trim(),
                     lastAdvertEpochSec = 0,
-                    latE6 = 0,
-                    lonE6 = 0,
+                    // A position when the caller knows one (e.g. the online map).
+                    latE6 = latE6,
+                    lonE6 = lonE6,
                     lastModEpochSec = System.currentTimeMillis() / 1000,
                 ),
             )
@@ -1653,7 +1723,7 @@ class MeshRepository(
             ?.let {
                 StoredRadioConfig(
                     it.radioFreqKhz, it.radioBandwidthHz, it.radioSpreadingFactor,
-                    it.radioTxPowerDbm, it.radioCodingRate,
+                    it.radioTxPowerDbm, it.radioCodingRate, it.radioMaxTxPowerDbm,
                 )
             }
             ?: _lastRadioConfig.value
@@ -1690,6 +1760,8 @@ class MeshRepository(
                 ?: existing?.radioSpreadingFactor ?: 0,
             radioCodingRate = _lastRadioConfig.value?.codingRate ?: existing?.radioCodingRate ?: 0,
             radioTxPowerDbm = _lastRadioConfig.value?.txPowerDbm ?: existing?.radioTxPowerDbm ?: 0,
+            radioMaxTxPowerDbm = _lastRadioConfig.value?.maxTxPowerDbm
+                ?: existing?.radioMaxTxPowerDbm ?: 0,
             contacts = _contacts.value.map { it.toPersisted() },
             channels = _channels.value.map { it.toPersisted() },
             adverts = _recentAdverts.value.map { it.toPersisted() },
@@ -2047,6 +2119,8 @@ data class StoredRadioConfig(
     val txPowerDbm: Int,
     /** 0 on stores written before the coding rate was remembered. */
     val codingRate: Int = 0,
+    /** The board's TX ceiling; 0 on stores written before it was remembered. */
+    val maxTxPowerDbm: Int = 0,
 )
 
 internal fun MeshFrame.Contact.toContact(): Contact = Contact(
