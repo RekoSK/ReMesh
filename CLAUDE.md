@@ -1,19 +1,37 @@
-# ReMesh Mobile App — Working Rules
+# ReMesh — Working Rules
 
-These rules govern work on the **ReMesh Android mobile app**. They are the durable
-record of the conventions agreed with the user, so they survive `/clear`.
-Read and follow them at the start of every session.
+These rules govern work on the ReMesh repo: the **Android mobile app**
+(`mobileapp/`) and the **firmware** (C++: `src/`, `examples/`, `variants/`, ...).
+They are the durable record of the conventions agreed with the user, so they
+survive `/clear`. Read and follow them at the start of every session.
 
 ## 1. Branch
 - Do **all** development on branch `Re16`. Commit and push there.
 - **Never** open a pull request unless the user explicitly asks.
 
 ## 2. Scope
-- Only touch the `mobileapp/` directory (the Android app), unless prompted otherwise.
-- Do **not** modify the firmware / C++ side of the repo (`src/`, `lib/`, `arch/`,
-  `variants/`, `boards/`, `platformio.ini`, etc.).
+- Each session works on **either** the mobile app **or** the firmware — the user
+  says which. Don't cross over without being prompted.
+- Mobile-app sessions: only touch `mobileapp/`.
+- Firmware sessions: the C++ side (`src/`, `examples/`, `variants/`, etc.);
+  leave `mobileapp/` alone.
 
-## 3. Build & deliver on every message
+## 3. Firmware: build & deliver on every message
+When working on the **firmware** (not the mobile app), after **every** change,
+from the repo root:
+- Build with `build2.sh` for the **T-Beam SX1276** by default:
+  `bash build2.sh build-firmware Tbeam_SX1276_companion_radio_ble`
+  — or a different target if the user asks for one
+  (`bash build2.sh list` shows all env names).
+- Commit first, then build, so the version string baked into the firmware
+  (`Re16-<commit-hash>`) matches the pushed commit.
+- The script drops both images into `out/`:
+  `<env>-Re16-<hash>.bin` (app image, OTA / offset 0x10000) and
+  `<env>-Re16-<hash>-merged.bin` (full image, flash at offset 0x0).
+- Send **both** `.bin` files to the user via SendUserFile.
+- PlatformIO: install with `pip install platformio` if `pio` is missing.
+
+## 4. Mobile app: build & deliver on every message
 After **every** change, from `mobileapp/`:
 - Build the debug APK: `./gradlew assembleDebug`
   - If the wrapper can't fetch the distribution (proxy 403 on the Gradle
@@ -29,13 +47,13 @@ Build environment reference:
 - App module: `:app`, package `com.rekosk.remesh`, minSdk 35, targetSdk 36,
   compileSdk 36. Jetpack Compose + Material3.
 
-## 4. Design / theming
+## 5. Design / theming (mobile app)
 - Fresh **Android 16** look, using **dynamic system colors** (Material You) —
   already wired into the project.
 - PFP (profile picture) backgrounds and name colors are **dark-amber**-like —
   already defined in the project; reuse the existing colors, don't invent new ones.
 
-## 5. PFP / point colour palette (do not reinvent)
+## 6. PFP / point colour palette (do not reinvent)
 The per-node/per-point colours all come from ONE palette defined in
 `mobileapp/app/src/main/java/com/rekosk/remesh/ui/components/NodeAvatar.kt`.
 Always reuse it — never hardcode new colours for avatars, map markers, or
@@ -63,7 +81,7 @@ signal-coverage points.
 - Node-type accents (repeater amber `F39C12`, etc.) live in `NodeColors`
   (`ui/theme/Color.kt`) and are used for non-chat node types.
 
-## 6. Loading indicators (always use these, never plain spinners)
+## 7. Loading indicators (always use these, never plain spinners)
 The user wants the **Material 3 expressive** loaders everywhere, consistently:
 
 - **Themed morphing shape** — `androidx.compose.material3.LoadingIndicator`
