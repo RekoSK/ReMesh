@@ -322,14 +322,18 @@ class MeshRepository(
     fun startAutoReconnect() {
         if (autoReconnectJob?.isActive == true) return
         autoReconnectJob = scope.launch {
-            // Show the last node's offline values immediately, before any link exists.
-            _savedNodes.value
-                .filter { it.address != null }
-                .maxByOrNull { it.lastConnectedEpochMs }
-                ?.takeIf { activeKey == null }
-                ?.let { openSavedNode(it.key) }
+            // The saved nodes load from disk asynchronously at startup; wait for them,
+            // or the last node's offline data (contacts, channels…) never comes up.
+            withTimeoutOrNull(5_000) { _savedNodes.first { it.isNotEmpty() } }
 
             while (true) {
+                // Show the last node's offline values as soon as one is known (retried
+                // inside the loop, so a slow disk load still gets its data on screen).
+                if (activeKey == null && connectionState.value !is ConnectionState.Ready) {
+                    _savedNodes.value
+                        .maxByOrNull { it.lastConnectedEpochMs }
+                        ?.let { openSavedNode(it.key) }
+                }
                 val target = _savedNodes.value
                     .filter { it.address != null }
                     .maxByOrNull { it.lastConnectedEpochMs }
