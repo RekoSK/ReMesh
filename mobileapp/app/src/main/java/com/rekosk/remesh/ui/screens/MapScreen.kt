@@ -14,11 +14,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOff
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -41,6 +44,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.filled.CellTower
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -60,11 +65,18 @@ import com.rekosk.remesh.ui.components.color
 import com.rekosk.remesh.ui.theme.NodeColors
 import kotlin.math.ceil
 import org.osmdroid.config.Configuration
+import org.osmdroid.events.DelayedMapListener
+import org.osmdroid.events.MapListener
+import org.osmdroid.events.ScrollEvent
+import org.osmdroid.events.ZoomEvent
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+
+/** Most online-map pins drawn at once; zooming in narrows the filter and shows the rest. */
+private const val MAX_ONLINE_PINS = 250
 
 /**
  * The Node Map. Renders OpenTopoMap tiles through osmdroid and drops a marker for
@@ -74,7 +86,7 @@ import org.osmdroid.views.overlay.Marker
  * osmdroid is a plain Android [MapView], so it lives inside an [AndroidView] and its
  * lifecycle (resume/pause/detach) is driven off the composition's lifecycle owner.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun MapScreen(
     viewModel: MeshViewModel,
@@ -135,6 +147,27 @@ fun MapScreen(
     // camera back while the user is panning; we only auto-centre the very first fix.
     val centered = remember { booleanArrayOf(false) }
 
+    // The online fetch can match thousands of nodes across the world; building a pin for
+    // each would freeze the map. Pins are limited to the visible viewport (re-filtered
+    // shortly after each pan/zoom via this tick) and their bitmaps cached per fetch.
+    var viewportTick by remember { mutableIntStateOf(0) }
+    DisposableEffect(mapView) {
+        val listener = DelayedMapListener(object : MapListener {
+            override fun onScroll(event: ScrollEvent?): Boolean {
+                viewportTick++
+                return false
+            }
+
+            override fun onZoom(event: ZoomEvent?): Boolean {
+                viewportTick++
+                return false
+            }
+        }, 250)
+        mapView.addMapListener(listener)
+        onDispose { mapView.removeMapListener(listener) }
+    }
+    val onlineArtCache = remember(onlineNodes, dark) { HashMap<String, MarkerArt>() }
+
     Scaffold(
         modifier = modifier,
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
@@ -161,6 +194,7 @@ fun MapScreen(
                 factory = { mapView },
                 modifier = Modifier.fillMaxSize(),
                 update = { view ->
+                    viewportTick // read so a pan/zoom re-runs this block
                     view.overlays.clear()
                     val now = System.currentTimeMillis()
                     positions.forEach { node ->
@@ -168,10 +202,21 @@ fun MapScreen(
                             node.toMarker(view, dark, primaryArgb, backingArgb, towerIcon, now, onOpenContact),
                         )
                     }
-                    onlineNodes.forEach { node ->
-                        view.overlays.add(
-                            node.toOnlineMarker(view, dark, backingArgb, towerIcon, onOpenOnlineNode),
-                        )
+                    if (onlineNodes.isNotEmpty()) {
+                        val box = view.boundingBox
+                            ?.takeIf { view.width > 0 }
+                            ?.increaseByScale(1.3f)
+                        var shown = 0
+                        for (node in onlineNodes) {
+                            if (shown >= MAX_ONLINE_PINS) break
+                            if (box != null && !box.contains(node.latitude, node.longitude)) continue
+                            view.overlays.add(
+                                node.toOnlineMarker(
+                                    view, dark, backingArgb, towerIcon, onlineArtCache, onOpenOnlineNode,
+                                ),
+                            )
+                            shown++
+                        }
                     }
                     if (!centered[0]) {
                         val focus = positions.firstOrNull { it.isSelf } ?: positions.firstOrNull()
@@ -186,7 +231,16 @@ fun MapScreen(
             )
 
             if (positions.isEmpty()) MapEmptyHint()
-            if (isLoadingOnline) MapLoadingIndicator("Loading online nodes…")
+            // Quiet themed loader while the online list downloads — same small shape the
+            // coverage points menu uses, not a blocking centre card.
+            if (isLoadingOnline) {
+                LoadingIndicator(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 12.dp)
+                        .size(32.dp),
+                )
+            }
             MapAttribution(Modifier.align(Alignment.BottomStart))
         }
     }
@@ -242,15 +296,20 @@ private fun OnlineMapNode.toOnlineMarker(
     dark: Boolean,
     backingArgb: Int,
     towerIcon: Drawable?,
+    artCache: MutableMap<String, MarkerArt>,
     onOpen: (OnlineMapNode) -> Unit,
 ): Marker = Marker(map).also { marker ->
-    val tint = if (type == NodeType.CHAT) avatarColor(contactId, dark).toArgb() else type.color().toArgb()
-    val tower = if (type == NodeType.REPEATER) towerIcon else null
-    val label = "${name.trim().ifBlank { "(unnamed)" }.take(24)}  •  online"
-    val art = nodeMarkerBitmap(
-        map, label, tint, avatarGlyph(name), tower,
-        tonal = true, backingArgb = backingArgb, onlineBadge = true,
-    )
+    // The bitmap is the expensive part of a pin, and an online node's look never changes
+    // within one fetch — render it once and reuse it across viewport re-filters.
+    val art = artCache.getOrPut(publicKeyHex) {
+        val tint = if (type == NodeType.CHAT) avatarColor(contactId, dark).toArgb() else type.color().toArgb()
+        val tower = if (type == NodeType.REPEATER) towerIcon else null
+        val label = "${name.trim().ifBlank { "(unnamed)" }.take(24)}  •  online"
+        nodeMarkerBitmap(
+            map, label, tint, avatarGlyph(name), tower,
+            tonal = true, backingArgb = backingArgb, onlineBadge = true,
+        )
+    }
 
     marker.position = GeoPoint(latitude, longitude)
     marker.icon = BitmapDrawable(map.resources, art.bitmap)
