@@ -101,46 +101,98 @@ static void uiRenderMenu(DisplayDriver& display, const char* const* items, int n
   }
 }
 
-// Like uiRenderMenu, but only shows a window of 'max_visible' rows starting at
-// 'scroll', with a scrollbar knob on the right when the list is longer. Used by
-// menus with more entries than fit the content area (e.g. the Morse options).
-static void uiRenderScrollMenu(DisplayDriver& display, const char* const* items, int n,
-                               int sel, int scroll, int max_visible) {
-  int vis = n < max_visible ? n : max_visible;
-  if (scroll < 0) scroll = 0;
-  if (scroll > n - vis) scroll = n - vis;
-
+// Modal popup like uiRenderMenu, but an item too wide for the box wraps onto a
+// second row (split at a space), and when the rows don't all fit only a window
+// of 'max_rows' is shown, scrolled so the selected item stays fully visible
+// (scrollbar knob on the right). 'scroll_row' is the caller's persistent
+// first-visible-row; this function adjusts and clamps it.
+#define WRAP_MENU_MAX_ITEMS 12
+static void uiRenderWrapMenu(DisplayDriver& display, const char* const* items, int n,
+                             int sel, int& scroll_row, int max_rows) {
   const int bx = 4, bw = display.width() - 8;
+  const int text_w = bw - 10;   // 3px inset each side, plus room for the scrollbar
+  if (n > WRAP_MENU_MAX_ITEMS) n = WRAP_MENU_MAX_ITEMS;
+  if (sel >= n) sel = n - 1;
+
+  // rows_of[i] = 1 or 2; split_at[i] = length of the first row when wrapped
+  int rows_of[WRAP_MENU_MAX_ITEMS], row0[WRAP_MENU_MAX_ITEMS], split_at[WRAP_MENU_MAX_ITEMS];
+  char buf[48];
+  int total_rows = 0;
+  for (int i = 0; i < n; i++) {
+    row0[i] = total_rows;
+    split_at[i] = 0;
+    rows_of[i] = 1;
+    if (display.getTextWidth(items[i]) > text_w) {
+      int len = strlen(items[i]);
+      if (len > (int)sizeof(buf) - 1) len = sizeof(buf) - 1;
+      int cut = 0;
+      for (int p = len - 1; p > 0; p--) {   // last space where the first part fits
+        if (items[i][p] != ' ') continue;
+        memcpy(buf, items[i], p); buf[p] = 0;
+        if (display.getTextWidth(buf) <= text_w) { cut = p; break; }
+      }
+      if (cut == 0) {                       // no space fits: hard cut by characters
+        for (int p = len - 1; p > 0; p--) {
+          memcpy(buf, items[i], p); buf[p] = 0;
+          if (display.getTextWidth(buf) <= text_w) { cut = p; break; }
+        }
+      }
+      if (cut > 0) { split_at[i] = cut; rows_of[i] = 2; }
+    }
+    total_rows += rows_of[i];
+  }
+
+  int vis = total_rows < max_rows ? total_rows : max_rows;
+
+  // keep the whole selected item inside the window
+  int sel_top = row0[sel], sel_bot = row0[sel] + rows_of[sel] - 1;
+  if (sel_top < scroll_row) scroll_row = sel_top;
+  if (sel_bot >= scroll_row + vis) scroll_row = sel_bot - vis + 1;
+  if (scroll_row > total_rows - vis) scroll_row = total_rows - vis;
+  if (scroll_row < 0) scroll_row = 0;
+
   const int bh = 11 * vis + 4;
   int by = 14 + (50 - bh) / 2;
   if (by < 13) by = 13;
 
   display.setColor(DisplayDriver::DARK);
-  display.fillRect(bx, by, bw, bh);
+  display.fillRect(bx, by, bw, bh);          // hide the page behind it
   display.setColor(DisplayDriver::LIGHT);
   display.drawRect(bx, by, bw, bh);
 
   display.setTextSize(1);
-  const int inner_w = (n > vis) ? bw - 4 : bw - 2;   // leave room for the scrollbar
-  for (int i = 0; i < vis; i++) {
-    int idx = scroll + i;
-    int y = by + 4 + i * 11;
-    if (idx == sel) {
-      display.setColor(DisplayDriver::LIGHT);
-      display.fillRect(bx + 1, y - 2, inner_w, 11);
-      display.setColor(DisplayDriver::DARK);
-    } else {
-      display.setColor(DisplayDriver::LIGHT);
+  for (int i = 0; i < n; i++) {
+    for (int r = 0; r < rows_of[i]; r++) {
+      int row = row0[i] + r;
+      if (row < scroll_row || row >= scroll_row + vis) continue;
+      int y = by + 4 + (row - scroll_row) * 11;
+      if (i == sel) {
+        display.setColor(DisplayDriver::LIGHT);
+        display.fillRect(bx + 1, y - 2, bw - 2, 11);
+        display.setColor(DisplayDriver::DARK);
+      } else {
+        display.setColor(DisplayDriver::LIGHT);
+      }
+      const char* txt = items[i];
+      if (rows_of[i] == 2) {
+        if (r == 0) {
+          memcpy(buf, items[i], split_at[i]); buf[split_at[i]] = 0;
+          txt = buf;
+        } else {
+          txt = items[i] + split_at[i];
+          while (*txt == ' ') txt++;
+        }
+      }
+      display.drawTextEllipsized(bx + 3, y, text_w, txt);
     }
-    display.drawTextEllipsized(bx + 3, y, inner_w - 4, items[idx]);
   }
 
-  if (n > vis) {   // scrollbar knob, same idea as the Channels list
+  if (total_rows > vis) {   // scrollbar knob, same idea as the Channels list
     display.setColor(DisplayDriver::LIGHT);
     int track_h = bh - 2;
-    int knob_h = track_h * vis / n;
+    int knob_h = track_h * vis / total_rows;
     if (knob_h < 3) knob_h = 3;
-    int knob_y = by + 1 + (track_h - knob_h) * scroll / (n - vis);
+    int knob_y = by + 1 + (track_h - knob_h) * scroll_row / (total_rows - vis);
     display.fillRect(bx + bw - 2, knob_y, 1, knob_h);
   }
 }
@@ -1523,6 +1575,7 @@ class ChannelViewScreen : public UIScreen {
   // long-press popup: Back / Send w/morsecode / Exit
   bool _menu;
   int  _menu_sel;
+  int  _menu_scroll;
   static const int CHVIEW_MENU_ITEMS = 3;
 
   static const int LINE_H  = 10;
@@ -1551,7 +1604,7 @@ class ChannelViewScreen : public UIScreen {
 
 public:
   ChannelViewScreen(UITask* task) : _task(task), _scroll(0), _stick_to_bottom(true),
-                                    _menu(false), _menu_sel(0) {
+                                    _menu(false), _menu_sel(0), _menu_scroll(0) {
     _key.channel_idx = DM_CHANNEL;
     _key.sender[0] = 0;
     _title[0] = 0;
@@ -1596,54 +1649,54 @@ public:
 
     if (store.countFor(_key) == 0) {
       display.drawTextCentered(display.width() / 2, 30, "(no messages)");
-      return 2000;
+    } else {
+      // --- messages ---
+      char lines[6][UI_MSG_TEXT_LEN];
+      char tmp[UI_MSG_TEXT_LEN];
+      int line = 0;   // global line index
+      for (int i = 0; i < store.count(); i++) {
+        const StoredMsg* m = store.at(i);
+        if (!_key.matches(*m)) continue;
+
+        int nbody = msgWrapLines(m->text, lines, 6, cols);
+
+        // sender line
+        if (line >= _scroll && line < _scroll + VISIBLE) {
+          int y = BODY_Y + (line - _scroll) * LINE_H;
+          display.setColor(DisplayDriver::YELLOW);
+          display.translateUTF8ToBlocks(tmp, m->sender[0] ? m->sender : "(unknown)", sizeof(tmp));
+          display.drawTextEllipsized(0, y, display.width(), tmp);
+        }
+        line++;
+
+        // body lines, and a box clipped to whatever part is on screen
+        int b0 = line, b1 = line + nbody - 1;
+        display.setColor(DisplayDriver::LIGHT);
+        for (int b = 0; b < nbody; b++, line++) {
+          if (line < _scroll || line >= _scroll + VISIBLE) continue;
+          int y = BODY_Y + (line - _scroll) * LINE_H;
+          display.translateUTF8ToBlocks(tmp, lines[b], sizeof(tmp));
+          display.setCursor(3, y);
+          display.print(tmp);
+        }
+        int vis_top = b0 < _scroll ? _scroll : b0;
+        int vis_bot = b1 > _scroll + VISIBLE - 1 ? _scroll + VISIBLE - 1 : b1;
+        if (vis_top <= vis_bot) {
+          int top_y = BODY_Y + (vis_top - _scroll) * LINE_H - 1;
+          int bot_y = BODY_Y + (vis_bot - _scroll) * LINE_H + 8;
+          if (bot_y > display.height() - 1) bot_y = display.height() - 1;
+          display.drawRect(0, top_y, display.width(), bot_y - top_y + 1);
+        }
+
+        line++;   // spacer
+        if (line >= _scroll + VISIBLE) break;   // rest is below the viewport
+      }
     }
 
-    // --- messages ---
-    char lines[6][UI_MSG_TEXT_LEN];
-    char tmp[UI_MSG_TEXT_LEN];
-    int line = 0;   // global line index
-    for (int i = 0; i < store.count(); i++) {
-      const StoredMsg* m = store.at(i);
-      if (!_key.matches(*m)) continue;
-
-      int nbody = msgWrapLines(m->text, lines, 6, cols);
-
-      // sender line
-      if (line >= _scroll && line < _scroll + VISIBLE) {
-        int y = BODY_Y + (line - _scroll) * LINE_H;
-        display.setColor(DisplayDriver::YELLOW);
-        display.translateUTF8ToBlocks(tmp, m->sender[0] ? m->sender : "(unknown)", sizeof(tmp));
-        display.drawTextEllipsized(0, y, display.width(), tmp);
-      }
-      line++;
-
-      // body lines, and a box clipped to whatever part is on screen
-      int b0 = line, b1 = line + nbody - 1;
-      display.setColor(DisplayDriver::LIGHT);
-      for (int b = 0; b < nbody; b++, line++) {
-        if (line < _scroll || line >= _scroll + VISIBLE) continue;
-        int y = BODY_Y + (line - _scroll) * LINE_H;
-        display.translateUTF8ToBlocks(tmp, lines[b], sizeof(tmp));
-        display.setCursor(3, y);
-        display.print(tmp);
-      }
-      int vis_top = b0 < _scroll ? _scroll : b0;
-      int vis_bot = b1 > _scroll + VISIBLE - 1 ? _scroll + VISIBLE - 1 : b1;
-      if (vis_top <= vis_bot) {
-        int top_y = BODY_Y + (vis_top - _scroll) * LINE_H - 1;
-        int bot_y = BODY_Y + (vis_bot - _scroll) * LINE_H + 8;
-        if (bot_y > display.height() - 1) bot_y = display.height() - 1;
-        display.drawRect(0, top_y, display.width(), bot_y - top_y + 1);
-      }
-
-      line++;   // spacer
-      if (line >= _scroll + VISIBLE) break;   // rest is below the viewport
-    }
-
+    // drawn last so it overlays both the messages and the "(no messages)" hint
     if (_menu) {
       static const char* items[CHVIEW_MENU_ITEMS] = { "Back", "Send w/morsecode", "Exit" };
-      uiRenderMenu(display, items, CHVIEW_MENU_ITEMS, _menu_sel);
+      uiRenderWrapMenu(display, items, CHVIEW_MENU_ITEMS, _menu_sel, _menu_scroll, 4);
     }
     return 1000;
   }
@@ -1680,6 +1733,7 @@ public:
     if (c == KEY_ENTER) {                        // long-press -> options popup
       _menu = true;
       _menu_sel = 0;
+      _menu_scroll = 0;
       return true;
     }
     return false;
@@ -1725,7 +1779,7 @@ class MorseComposeScreen : public UIScreen {
   int  _menu_sel;
   int  _menu_scroll;
   static const int MENU_ITEMS   = 7;
-  static const int MENU_VISIBLE = 4;
+  static const int MENU_VISIBLE = 4;   // visible ROWS in the wrap menu (items may take 2)
 
   static const int MORSE_Y = 24;
   static const int LABEL_Y = 40;
@@ -1821,12 +1875,6 @@ class MorseComposeScreen : public UIScreen {
     resetTiming();
   }
 
-  void scrollMenu() {
-    if (_menu_sel < _menu_scroll) _menu_scroll = _menu_sel;
-    if (_menu_sel >= _menu_scroll + MENU_VISIBLE) _menu_scroll = _menu_sel - MENU_VISIBLE + 1;
-    if (_menu_scroll < 0) _menu_scroll = 0;
-  }
-
 public:
   MorseComposeScreen(UITask* task) : _task(task) {
     _key.channel_idx = DM_CHANNEL;
@@ -1903,8 +1951,8 @@ public:
   bool handleInput(char c) override {
     if (!_menu) return true;   // typing is handled in poll(); swallow stray events
 
-    if (c == KEY_NEXT || c == KEY_RIGHT) { _menu_sel = (_menu_sel + 1) % MENU_ITEMS; scrollMenu(); return true; }
-    if (c == KEY_PREV || c == KEY_LEFT)  { _menu_sel = (_menu_sel + MENU_ITEMS - 1) % MENU_ITEMS; scrollMenu(); return true; }
+    if (c == KEY_NEXT || c == KEY_RIGHT) { _menu_sel = (_menu_sel + 1) % MENU_ITEMS; return true; }
+    if (c == KEY_PREV || c == KEY_LEFT)  { _menu_sel = (_menu_sel + MENU_ITEMS - 1) % MENU_ITEMS; return true; }
     if (c == KEY_ENTER) {
       switch (_menu_sel) {
         case 0: closeMenuToTyping(); break;                 // Back
@@ -1931,10 +1979,10 @@ public:
 
     if (_menu) {
       static const char* items[MENU_ITEMS] = {
-        "* Back", "* Remove last letter", "* Remove last word",
-        "* Send as MC", "* Send as text", "* Discard", "* Exit"
+        "Back", "Remove last letter", "Remove last word",
+        "Send as MC", "Send as text", "Discard", "Exit"
       };
-      uiRenderScrollMenu(display, items, MENU_ITEMS, _menu_sel, _menu_scroll, MENU_VISIBLE);
+      uiRenderWrapMenu(display, items, MENU_ITEMS, _menu_sel, _menu_scroll, MENU_VISIBLE);
       return 80;
     }
 
@@ -2698,6 +2746,13 @@ void UITask::loop() {
   // events must not be mapped to actions or fire global side effects.
   bool raw_btn = (curr && curr->rawButtonInput());
   (void)raw_btn;
+
+  // Raw-input screens never produce mapped key events, so nothing below would
+  // extend the auto-off timer or wake the display: do both here on any press,
+  // otherwise the screen goes dark mid-typing and taps can't bring it back.
+  if (raw_btn && isButtonPressed()) {
+    checkDisplayOn(0);
+  }
 
 #if UI_HAS_JOYSTICK
   int ev = user_btn.check();
