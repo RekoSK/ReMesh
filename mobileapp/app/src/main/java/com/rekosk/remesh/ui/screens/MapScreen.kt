@@ -25,6 +25,7 @@ import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -231,15 +232,22 @@ fun MapScreen(
             )
 
             if (positions.isEmpty()) MapEmptyHint()
-            // Quiet themed loader while the online list downloads — same small shape the
-            // coverage points menu uses, not a blocking centre card.
+            // Quiet themed loader while the online list downloads — small, but on the same
+            // rounded surface backdrop every other loading indicator in the app sits on.
             if (isLoadingOnline) {
-                LoadingIndicator(
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+                    shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .align(Alignment.TopCenter)
-                        .padding(top = 12.dp)
-                        .size(32.dp),
-                )
+                        .padding(top = 12.dp),
+                ) {
+                    LoadingIndicator(
+                        modifier = Modifier
+                            .padding(8.dp)
+                            .size(32.dp),
+                    )
+                }
             }
             MapAttribution(Modifier.align(Alignment.BottomStart))
         }
