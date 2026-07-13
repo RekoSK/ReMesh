@@ -132,6 +132,14 @@ class MeshRepository(
     private val _lastRadioConfig = MutableStateFlow<StoredRadioConfig?>(null)
     val lastRadioConfig: StateFlow<StoredRadioConfig?> = _lastRadioConfig.asStateFlow()
 
+    // The node's last accepted settings (kept offline) and settings edited while
+    // offline, waiting to be applied on the next handshake.
+    private val _lastNodeSettings = MutableStateFlow<NodeSettings?>(null)
+    val lastNodeSettings: StateFlow<NodeSettings?> = _lastNodeSettings.asStateFlow()
+
+    private val _pendingSettings = MutableStateFlow<NodeSettings?>(null)
+    val pendingSettings: StateFlow<NodeSettings?> = _pendingSettings.asStateFlow()
+
     private fun rememberRadioConfig(self: MeshFrame.SelfInfo) {
         _lastRadioConfig.value = StoredRadioConfig(
             freqKhz = self.radioFreqKhz.toInt(),
@@ -141,8 +149,27 @@ class MeshRepository(
             codingRate = self.codingRate,
             maxTxPowerDbm = self.maxTxPower,
         )
+        _lastNodeSettings.value = NodeSettings.from(self)
         // Persist promptly: the whole point is having the config before the next connect.
         requestSave()
+    }
+
+    /** Stores settings edited while offline; they upload on the next handshake. */
+    fun queueSettings(edited: NodeSettings) {
+        _pendingSettings.value = edited
+        requestSave()
+    }
+
+    /** Applies (then clears) offline-edited settings once a link is up. */
+    private suspend fun flushPendingSettings() {
+        val pending = _pendingSettings.value ?: return
+        val self = _selfInfo.value ?: return
+        val base = NodeSettings.from(self)
+        val error = if (pending == base) null else applySettings(base, pending)
+        // Cleared either way: a value the node rejected would otherwise retry forever.
+        _pendingSettings.value = null
+        requestSave()
+        if (error != null) _lastError.value = "Queued settings: $error"
     }
 
     /**
@@ -418,6 +445,7 @@ class MeshRepository(
         // the user queued while this node was offline.
         flushQueuedMessages()
         flushQueuedLocationUpdates()
+        flushPendingSettings()
     }
 
     /**
@@ -1727,6 +1755,8 @@ class MeshRepository(
                 )
             }
             ?: _lastRadioConfig.value
+        _lastNodeSettings.value = node?.lastSettings?.toDomain() ?: _lastNodeSettings.value
+        _pendingSettings.value = node?.pendingSettings?.toDomain()
         // Rebuild the id -> key-prefix map from the ids themselves, so a contact opened
         // offline still resolves (sending stays blocked until connected regardless).
         contactKeys.clear()
@@ -1762,6 +1792,9 @@ class MeshRepository(
             radioTxPowerDbm = _lastRadioConfig.value?.txPowerDbm ?: existing?.radioTxPowerDbm ?: 0,
             radioMaxTxPowerDbm = _lastRadioConfig.value?.maxTxPowerDbm
                 ?: existing?.radioMaxTxPowerDbm ?: 0,
+            lastSettings = _lastNodeSettings.value?.toPersisted() ?: existing?.lastSettings,
+            // No `existing` fallback: a cleared pending edit must persist as cleared.
+            pendingSettings = _pendingSettings.value?.toPersisted(),
             contacts = _contacts.value.map { it.toPersisted() },
             channels = _channels.value.map { it.toPersisted() },
             adverts = _recentAdverts.value.map { it.toPersisted() },

@@ -8,6 +8,7 @@ import com.rekosk.remesh.data.model.DeliveryState
 import com.rekosk.remesh.data.model.HeardRepeat
 import com.rekosk.remesh.data.model.MeshMessage
 import com.rekosk.remesh.data.model.MessageRoute
+import com.rekosk.remesh.data.model.NodeSettings
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.data.model.RecentAdvert
 import com.rekosk.remesh.data.model.Route
@@ -60,6 +61,34 @@ data class PersistedNode(
     val readMarks: Map<String, Long> = emptyMap(),
     /** Location updates made while offline, waiting to be pushed on the next handshake. */
     val pendingLocations: List<PersistedPendingLocation> = emptyList(),
+    /** The node's last accepted settings, so the config menu is editable offline. */
+    val lastSettings: PersistedNodeSettings? = null,
+    /** Settings edited while offline, applied (then cleared) on the next handshake. */
+    val pendingSettings: PersistedNodeSettings? = null,
+)
+
+/** A full editable-settings snapshot (same fields the config menu writes). */
+@Serializable
+data class PersistedNodeSettings(
+    val name: String,
+    val latE6: Int,
+    val lonE6: Int,
+    val shareLocation: Boolean,
+    val freqKhz: Int,
+    val bandwidthHz: Int,
+    val spreadingFactor: Int,
+    val codingRate: Int,
+    val txPowerDbm: Int,
+)
+
+fun NodeSettings.toPersisted(): PersistedNodeSettings = PersistedNodeSettings(
+    name, latE6, lonE6, shareLocation, freqKhz, bandwidthHz,
+    spreadingFactor, codingRate, txPowerDbm,
+)
+
+fun PersistedNodeSettings.toDomain(): NodeSettings = NodeSettings(
+    name, latE6, lonE6, shareLocation, freqKhz, bandwidthHz,
+    spreadingFactor, codingRate, txPowerDbm,
 )
 
 /** A queued location update: [target] is "self" or a contact id; coords in 1e-6 degrees. */

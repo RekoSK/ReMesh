@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
@@ -100,6 +101,14 @@ fun ConnectScreen(
     val selfName by viewModel.selfName.collectAsStateWithLifecycle()
     val connectionRssi by viewModel.connectionRssi.collectAsStateWithLifecycle()
     val storage by viewModel.storage.collectAsStateWithLifecycle()
+    val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
+    val pendingSettings by viewModel.pendingSettings.collectAsStateWithLifecycle()
+
+    // Once any node has ever been connected, the tab defaults to that node's panel
+    // (its offline values + live status); the Bluetooth picker moves behind "Switch".
+    var showPicker by remember { mutableStateOf(false) }
+    val hasNode = savedNodes.isNotEmpty()
+    LaunchedEffect(state) { if (state is ConnectionState.Ready) showPicker = false }
 
     // While connected, keep the link RSSI and battery fresh: RSSI ticks every few
     // seconds, battery far less often since it barely moves.
@@ -131,9 +140,12 @@ fun ConnectScreen(
         if (hasPermissions) viewModel.startScan()
     }
 
-    // Scanning is expensive; run it only while this screen is on top.
-    DisposableEffect(hasPermissions, state) {
-        if (hasPermissions && state !is ConnectionState.Ready) viewModel.startScan()
+    // Scanning is expensive; run it only while the picker is actually on screen (the
+    // auto-reconnect loop does its own duty-cycled scanning behind the node panel).
+    DisposableEffect(hasPermissions, state, showPicker, hasNode) {
+        if (hasPermissions && state !is ConnectionState.Ready && (showPicker || !hasNode)) {
+            viewModel.startScan()
+        }
         onDispose { viewModel.stopScan() }
     }
 
@@ -144,8 +156,8 @@ fun ConnectScreen(
             Column {
                 TopAppBar(
                     navigationIcon = {
-                        if (onBack != null) {
-                            IconButton(onClick = onBack) {
+                        if (onBack != null || (showPicker && hasNode)) {
+                            IconButton(onClick = { if (showPicker) showPicker = false else onBack?.invoke() }) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.ArrowBack,
                                     contentDescription = "Back",
@@ -153,7 +165,14 @@ fun ConnectScreen(
                             }
                         }
                     },
-                    title = { Text(if (onBack == null) "Me" else "Connect to node") },
+                    title = {
+                        Text(
+                            when {
+                                showPicker || onBack != null -> "Connect to node"
+                                else -> "Me"
+                            },
+                        )
+                    },
                 )
                 AnimatedVisibility(visible = state is ConnectionState.Scanning) {
                     LinearWavyProgressIndicator(
@@ -172,15 +191,25 @@ fun ConnectScreen(
         ) {
             StatusBanner(state = state, selfName = selfName, error = error)
 
+            val connected = state is ConnectionState.Ready
             when {
                 !hasPermissions -> PermissionPrompt { permissionLauncher.launch(BLE_PERMISSIONS) }
 
-                state is ConnectionState.Ready -> ConnectedPanel(
-                    deviceName = selfName ?: (state as ConnectionState.Ready).deviceName,
+                // The default "Me" view once a node has ever been connected: its saved
+                // (offline) values with a live status line; the picker is behind Switch.
+                hasNode && !showPicker -> NodePanel(
+                    deviceName = selfName
+                        ?: (state as? ConnectionState.Ready)?.deviceName
+                        ?: savedNodes.maxByOrNull { it.lastConnectedEpochMs }?.name
+                        ?: "(node)",
+                    status = nodeStatus(state, isSyncing),
+                    connected = connected,
                     rssi = connectionRssi,
                     battery = storage,
+                    hasPendingSettings = pendingSettings != null,
                     onDisconnect = viewModel::disconnect,
                     onOpenSettings = onOpenSettings,
+                    onSwitch = { showPicker = true },
                 )
 
                 state is ConnectionState.Bonding || state is ConnectionState.Connecting ||
@@ -192,15 +221,29 @@ fun ConnectScreen(
                 else -> NodeList(
                     devices = devices,
                     savedNodes = savedNodes,
-                    onConnect = { viewModel.connect(it) },
+                    onConnect = {
+                        showPicker = false
+                        viewModel.connect(it)
+                    },
                     onOpenOffline = { key ->
                         viewModel.openSavedNode(key)
+                        showPicker = false
                         onNodeOpened()
                     },
                 )
             }
         }
     }
+}
+
+/** The one-line node status shown in the panel: offline → searching → … → online. */
+private fun nodeStatus(state: ConnectionState, isSyncing: Boolean): String = when {
+    state is ConnectionState.Ready && isSyncing -> "Updating…"
+    state is ConnectionState.Ready -> "Online"
+    state is ConnectionState.Connecting || state is ConnectionState.Bonding ||
+        state is ConnectionState.Discovering -> "Connecting…"
+    state is ConnectionState.Scanning -> "Searching…"
+    else -> "Offline"
 }
 
 @Composable
@@ -250,12 +293,16 @@ private fun PermissionPrompt(onRequest: () -> Unit) {
 }
 
 @Composable
-private fun ConnectedPanel(
+private fun NodePanel(
     deviceName: String,
+    status: String,
+    connected: Boolean,
     rssi: Int?,
     battery: MeshFrame.Battery?,
+    hasPendingSettings: Boolean,
     onDisconnect: () -> Unit,
     onOpenSettings: () -> Unit,
+    onSwitch: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -277,50 +324,67 @@ private fun ConnectedPanel(
             style = MaterialTheme.typography.headlineSmall,
             modifier = Modifier.padding(top = 16.dp),
         )
+        Text(
+            text = status,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (connected) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
 
-        Column(
-            modifier = Modifier
-                .padding(top = 24.dp)
-                .widthIn(max = 320.dp)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            // Signal strength of the BLE link between this phone and the node.
-            StatRow(
-                leading = { if (rssi != null) SignalBarsForRssi(rssi) },
-                label = "Signal to node",
-                value = rssi?.let { "$it dBm" } ?: "…",
-            )
-            // Battery reported by the node itself (CMD_GET_BATT_AND_STORAGE).
-            StatRow(
-                leading = {
-                    Icon(
-                        imageVector = batteryIcon(battery?.batteryPercent(), battery?.charging == true),
-                        contentDescription = null,
-                        tint = batteryTint(battery?.batteryPercent()),
-                    )
-                },
-                label = "Battery",
-                value = battery?.let {
-                    val pct = "${it.batteryPercent()}% · ${"%.2f".format(it.volts())} V"
-                    when (it.charging) {
-                        true -> "$pct · Charging"
-                        false -> "$pct · On battery"
-                        null -> pct
-                    }
-                } ?: "…",
-            )
+        if (connected) {
+            Column(
+                modifier = Modifier
+                    .padding(top = 24.dp)
+                    .widthIn(max = 320.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                // Signal strength of the BLE link between this phone and the node.
+                StatRow(
+                    leading = { if (rssi != null) SignalBarsForRssi(rssi) },
+                    label = "Signal to node",
+                    value = rssi?.let { "$it dBm" } ?: "…",
+                )
+                // Battery reported by the node itself (CMD_GET_BATT_AND_STORAGE).
+                StatRow(
+                    leading = {
+                        Icon(
+                            imageVector = batteryIcon(battery?.batteryPercent(), battery?.charging == true),
+                            contentDescription = null,
+                            tint = batteryTint(battery?.batteryPercent()),
+                        )
+                    },
+                    label = "Battery",
+                    value = battery?.let {
+                        val pct = "${it.batteryPercent()}% · ${"%.2f".format(it.volts())} V"
+                        when (it.charging) {
+                            true -> "$pct · Charging"
+                            false -> "$pct · On battery"
+                            null -> pct
+                        }
+                    } ?: "…",
+                )
+            }
         }
 
-        OutlinedButton(onClick = onDisconnect, modifier = Modifier.padding(top = 24.dp)) {
-            Icon(Icons.Filled.LinkOff, contentDescription = null)
-            Spacer(Modifier.width(8.dp))
-            Text("Disconnect")
+        if (connected) {
+            OutlinedButton(onClick = onDisconnect, modifier = Modifier.padding(top = 24.dp)) {
+                Icon(Icons.Filled.LinkOff, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Disconnect")
+            }
         }
         Button(onClick = onOpenSettings, modifier = Modifier.padding(top = 12.dp)) {
             Icon(Icons.Filled.Settings, contentDescription = null)
             Spacer(Modifier.width(8.dp))
-            Text("Configuration")
+            // Offline edits queue up; the clock says some are still waiting to upload.
+            Text(if (hasPendingSettings) "Configuration  🕖" else "Configuration")
+        }
+        OutlinedButton(onClick = onSwitch, modifier = Modifier.padding(top = 12.dp)) {
+            Icon(Icons.Filled.SwapHoriz, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text("Switch node")
         }
     }
 }

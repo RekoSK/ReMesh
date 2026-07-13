@@ -404,12 +404,31 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun persist(prefs: ContactAppPrefs) = this.prefs.save(prefs)
     suspend fun persist(prefs: ExperimentalPrefs) = this.prefs.save(prefs)
 
-    /** Uploads changed settings. [onResult] gets null on success, else an error to show. */
+    /** The node's last accepted settings (survives disconnects/restarts). */
+    val lastNodeSettings: StateFlow<NodeSettings?> get() = repository.lastNodeSettings
+
+    /** Settings edited offline, waiting to upload on the next connection. */
+    val pendingSettings: StateFlow<NodeSettings?> get() = repository.pendingSettings
+
+    /** The board's TX ceiling from the stored config, for offline validation hints. */
+    fun storedTxPowerCeiling(): Int =
+        repository.lastRadioConfig.value?.maxTxPowerDbm?.takeIf { it > 0 }
+            ?: MeshCoreProtocol.RadioLimits.TX_POWER_MAX_FALLBACK
+
+    /**
+     * Uploads changed settings — or, while the node is offline, queues them to upload
+     * on the next connection. [onResult] gets null on success, else an error to show.
+     */
     fun saveSettings(
         original: NodeSettings,
         edited: NodeSettings,
         onResult: (String?) -> Unit,
     ) {
+        if (connectionState.value !is ConnectionState.Ready) {
+            repository.queueSettings(edited)
+            onResult(null)
+            return
+        }
         viewModelScope.launch {
             _isSavingSettings.value = true
             val error = repository.applySettings(original, edited)

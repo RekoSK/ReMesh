@@ -122,9 +122,36 @@ fun SettingsScreen(
 
     LaunchedEffect(Unit) { viewModel.refreshStorage() }
 
-    // Baseline from the node. Re-keyed on selfInfo so a successful save (which
-    // re-reads SELF_INFO) resets the form to what the node actually accepted.
-    val original = selfInfo?.let { NodeSettings.from(it) }
+    val storedSettings by viewModel.lastNodeSettings.collectAsStateWithLifecycle()
+    val queuedSettings by viewModel.pendingSettings.collectAsStateWithLifecycle()
+    val isConnected by viewModel.isRadioConnected.collectAsStateWithLifecycle()
+
+    // Baseline: the live node while connected; offline, the queued edit (so it shows
+    // what will upload) or the last settings the node accepted. Re-keyed on selfInfo so
+    // a successful save (which re-reads SELF_INFO) resets the form to the node's truth.
+    val original = selfInfo?.let { NodeSettings.from(it) } ?: queuedSettings ?: storedSettings
+
+    // Fields already edited offline and waiting to upload — marked with a 🕖 below,
+    // exactly like queued messages.
+    val pendingFields: Set<String> = run {
+        val pending = queuedSettings
+        val base = storedSettings
+        if (pending == null || base == null) {
+            emptySet()
+        } else {
+            buildSet {
+                if (pending.name != base.name) add("name")
+                if (pending.latE6 != base.latE6) add("lat")
+                if (pending.lonE6 != base.lonE6) add("lon")
+                if (pending.shareLocation != base.shareLocation) add("share")
+                if (pending.freqKhz != base.freqKhz) add("freq")
+                if (pending.bandwidthHz != base.bandwidthHz) add("bw")
+                if (pending.spreadingFactor != base.spreadingFactor) add("sf")
+                if (pending.codingRate != base.codingRate) add("cr")
+                if (pending.txPowerDbm != base.txPowerDbm) add("tx")
+            }
+        }
+    }
 
     var nameText by remember(original) { mutableStateOf(original?.name.orEmpty()) }
     var latText by remember(original) { mutableStateOf(original?.latE6.asCoordinateText()) }
@@ -138,7 +165,7 @@ fun SettingsScreen(
     var codingRate by remember(original) { mutableStateOf(original?.codingRate ?: 5) }
     var txPowerText by remember(original) { mutableStateOf(original?.txPowerDbm?.toString().orEmpty()) }
 
-    val txCeiling = selfInfo?.txPowerCeiling ?: RadioLimits.TX_POWER_MAX_FALLBACK
+    val txCeiling = selfInfo?.txPowerCeiling ?: viewModel.storedTxPowerCeiling()
     var showDiscard by remember { mutableStateOf(false) }
 
     // Compared as text against the same formatting used to seed each field, so an
@@ -176,7 +203,8 @@ fun SettingsScreen(
     }
 
     fun onSave(thenBack: Boolean = false) {
-        val base = original ?: run { showMessage("Not connected to a node"); return }
+        val base = original
+            ?: run { showMessage("No node data yet — connect to your node once first"); return }
         val latE6 = NodeSettings.coordE6FromText(latText)
             ?: run { showMessage("Latitude is not a number"); return }
         val lonE6 = NodeSettings.coordE6FromText(lonText)
@@ -205,7 +233,8 @@ fun SettingsScreen(
             when {
                 error != null -> showMessage(error)
                 thenBack -> onBack()
-                else -> showMessage("Settings saved to node")
+                isConnected -> showMessage("Settings saved to node")
+                else -> showMessage("Saved 🕖 — uploads when the node connects")
             }
         }
     }
@@ -275,6 +304,7 @@ fun SettingsScreen(
             item {
                 PublicInfoSection(
                     selfInfo = selfInfo,
+                    pendingFields = pendingFields,
                     name = nameText,
                     onNameChange = { nameText = it },
                     lat = latText,
@@ -299,6 +329,7 @@ fun SettingsScreen(
 
             item {
                 RadioSection(
+                    pendingFields = pendingFields,
                     freq = freqText,
                     onFreqChange = { freqText = it },
                     bandwidthKhz = bandwidthKhz,
@@ -381,6 +412,7 @@ private fun IdentityHeader(selfInfo: MeshFrame.SelfInfo?) {
 @Composable
 private fun PublicInfoSection(
     selfInfo: MeshFrame.SelfInfo?,
+    pendingFields: Set<String> = emptySet(),
     name: String,
     onNameChange: (String) -> Unit,
     lat: String,
@@ -445,7 +477,7 @@ private fun PublicInfoSection(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             FlatTextField(
-                label = "Name",
+                label = "Name".pendingMark("name" in pendingFields),
                 value = name,
                 onValueChange = onNameChange,
                 modifier = Modifier.weight(1f),
@@ -485,14 +517,14 @@ private fun PublicInfoSection(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             FlatTextField(
-                label = "Latitude",
+                label = "Latitude".pendingMark("lat" in pendingFields),
                 value = lat,
                 onValueChange = onLatChange,
                 keyboardType = KeyboardType.Decimal,
                 modifier = Modifier.weight(1f),
             )
             FlatTextField(
-                label = "Longitude",
+                label = "Longitude".pendingMark("lon" in pendingFields),
                 value = lon,
                 onValueChange = onLonChange,
                 keyboardType = KeyboardType.Decimal,
@@ -514,7 +546,7 @@ private fun PublicInfoSection(
             Checkbox(checked = shareLocation, onCheckedChange = onShareLocationChange)
             Spacer(Modifier.width(8.dp))
             Text(
-                text = "Share location in advert",
+                text = "Share location in advert".pendingMark("share" in pendingFields),
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.weight(1f),
             )
@@ -526,6 +558,7 @@ private fun PublicInfoSection(
 
 @Composable
 private fun RadioSection(
+    pendingFields: Set<String> = emptySet(),
     freq: String,
     onFreqChange: (String) -> Unit,
     bandwidthKhz: Double,
@@ -542,7 +575,7 @@ private fun RadioSection(
 
     SettingsCard {
         FlatTextField(
-            label = "Frequency (MHz)",
+            label = "Frequency (MHz)".pendingMark("freq" in pendingFields),
             value = freq,
             onValueChange = onFreqChange,
             keyboardType = KeyboardType.Decimal,
@@ -550,28 +583,28 @@ private fun RadioSection(
         )
         RowDivider()
         FlatDropdown(
-            label = "Bandwidth",
+            label = "Bandwidth".pendingMark("bw" in pendingFields),
             selected = formatBandwidth(bandwidthKhz),
             options = RadioLimits.BANDWIDTHS_KHZ.map { formatBandwidth(it) },
             onSelectIndex = { onBandwidthChange(RadioLimits.BANDWIDTHS_KHZ[it]) },
         )
         RowDivider()
         FlatDropdown(
-            label = "Spreading factor",
+            label = "Spreading factor".pendingMark("sf" in pendingFields),
             selected = spreadingFactor.toString(),
             options = RadioLimits.SPREADING_FACTORS.map { it.toString() },
             onSelectIndex = { onSpreadingFactorChange(RadioLimits.SPREADING_FACTORS[it]) },
         )
         RowDivider()
         FlatDropdown(
-            label = "Coding rate",
+            label = "Coding rate".pendingMark("cr" in pendingFields),
             selected = codingRate.toString(),
             options = RadioLimits.CODING_RATES.map { it.toString() },
             onSelectIndex = { onCodingRateChange(RadioLimits.CODING_RATES[it]) },
         )
         RowDivider()
         FlatTextField(
-            label = "TX power (dBm)  •  max $txCeiling",
+            label = "TX power (dBm)  •  max $txCeiling".pendingMark("tx" in pendingFields),
             value = txPower,
             onValueChange = onTxPowerChange,
             keyboardType = KeyboardType.Number,
@@ -579,6 +612,9 @@ private fun RadioSection(
         )
     }
 }
+
+/** The queued-upload mark, matching queued messages' clock. */
+private fun String.pendingMark(pending: Boolean): String = if (pending) "$this  \uD83D\uDD56" else this
 
 private fun formatBandwidth(khz: Double): String =
     if (khz % 1.0 == 0.0) "${khz.toInt()} kHz" else "$khz kHz"
