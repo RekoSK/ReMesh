@@ -9,7 +9,7 @@ Read and follow them at the start of every session.
 - **Never** open a pull request unless the user explicitly asks.
 
 ## 2. Scope
-- Only touch the `mobileapp/` directory (the Android app).
+- Only touch the `mobileapp/` directory (the Android app), unless prompted otherwise.
 - Do **not** modify the firmware / C++ side of the repo (`src/`, `lib/`, `arch/`,
   `variants/`, `boards/`, `platformio.ini`, etc.).
 
