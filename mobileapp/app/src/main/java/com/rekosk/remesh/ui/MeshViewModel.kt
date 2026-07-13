@@ -23,6 +23,9 @@ import com.rekosk.remesh.data.ContactAppPrefs
 import com.rekosk.remesh.data.ExperimentalPrefs
 import com.rekosk.remesh.data.MeshContainer
 import com.rekosk.remesh.data.MessagePrefs
+import com.rekosk.remesh.data.OnlineMapNode
+import com.rekosk.remesh.data.OnlineNodesApi
+import com.rekosk.remesh.data.OnlineRadioConfig
 import com.rekosk.remesh.data.NotificationPrefs
 import com.rekosk.remesh.data.SavedNodeSummary
 import com.rekosk.remesh.data.model.Channel
@@ -148,6 +151,82 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    // ---------------- online map nodes ----------------
+
+    private val _onlineNodesEnabled = MutableStateFlow(false)
+
+    /** Whether the map's "Online map" toggle is on. */
+    val onlineNodesEnabled: StateFlow<Boolean> = _onlineNodesEnabled.asStateFlow()
+
+    private val _isLoadingOnlineNodes = MutableStateFlow(false)
+    val isLoadingOnlineNodes: StateFlow<Boolean> = _isLoadingOnlineNodes.asStateFlow()
+
+    private val _onlineNodes = MutableStateFlow<List<OnlineMapNode>>(emptyList())
+
+    /**
+     * The map.meshcore.io nodes to pin: empty while the toggle is off, and always with
+     * anyone already in the contact list dropped (their offline marker wins). The
+     * radio-config filtering already happened while the response streamed in.
+     */
+    val onlineMapNodes: StateFlow<List<OnlineMapNode>> =
+        combine(_onlineNodes, _onlineNodesEnabled, repository.contacts) { nodes, enabled, contacts ->
+            if (!enabled) {
+                emptyList()
+            } else {
+                val known = contacts.mapTo(HashSet()) { it.id }
+                nodes.filterNot { it.contactId in known }
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * Flips the "Online map" toggle. Turning it on fetches the public map, filtered to
+     * nodes on the same radio configuration as ours -- which is why it needs a known
+     * config: the live one while connected, else the last one seen from this node.
+     * [onError] fires (and the toggle stays off) when neither exists or the fetch fails.
+     */
+    fun toggleOnlineNodes(onError: (String) -> Unit) {
+        if (_onlineNodesEnabled.value) {
+            _onlineNodesEnabled.value = false
+            _onlineNodes.value = emptyList()
+            return
+        }
+        if (_isLoadingOnlineNodes.value) return
+        val self = repository.selfInfo.value
+        val stored = repository.lastRadioConfig.value
+        val config = when {
+            self != null -> OnlineRadioConfig(
+                freqKhz = self.radioFreqKhz.toInt(),
+                bandwidthHz = self.radioBandwidthHz.toInt(),
+                spreadingFactor = self.spreadingFactor,
+                codingRate = self.codingRate,
+            )
+            stored != null && stored.codingRate > 0 -> OnlineRadioConfig(
+                freqKhz = stored.freqKhz,
+                bandwidthHz = stored.bandwidthHz,
+                spreadingFactor = stored.spreadingFactor,
+                codingRate = stored.codingRate,
+            )
+            else -> {
+                onError("Connect to your node first, so its radio settings are known")
+                return
+            }
+        }
+        _onlineNodesEnabled.value = true
+        viewModelScope.launch {
+            _isLoadingOnlineNodes.value = true
+            val selfKeyHex = self?.publicKey?.joinToString("") { "%02x".format(it) }
+            withContext(Dispatchers.IO) { runCatching { OnlineNodesApi.fetchMatching(config) } }
+                .onSuccess { nodes ->
+                    _onlineNodes.value = nodes.filterNot { it.publicKeyHex == selfKeyHex }
+                }
+                .onFailure { e ->
+                    _onlineNodesEnabled.value = false
+                    onError("Couldn't load the online map: ${e.message ?: "network error"}")
+                }
+            _isLoadingOnlineNodes.value = false
+        }
+    }
 
     val totalContactCount: StateFlow<Int> =
         repository.contacts

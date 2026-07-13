@@ -137,6 +137,7 @@ class MeshRepository(
             bandwidthHz = self.radioBandwidthHz.toInt(),
             spreadingFactor = self.spreadingFactor,
             txPowerDbm = self.txPower,
+            codingRate = self.codingRate,
         )
     }
 
@@ -1651,7 +1652,8 @@ class MeshRepository(
             ?.takeIf { it.radioFreqKhz > 0 }
             ?.let {
                 StoredRadioConfig(
-                    it.radioFreqKhz, it.radioBandwidthHz, it.radioSpreadingFactor, it.radioTxPowerDbm,
+                    it.radioFreqKhz, it.radioBandwidthHz, it.radioSpreadingFactor,
+                    it.radioTxPowerDbm, it.radioCodingRate,
                 )
             }
             ?: _lastRadioConfig.value
@@ -1686,6 +1688,7 @@ class MeshRepository(
             radioBandwidthHz = _lastRadioConfig.value?.bandwidthHz ?: existing?.radioBandwidthHz ?: 0,
             radioSpreadingFactor = _lastRadioConfig.value?.spreadingFactor
                 ?: existing?.radioSpreadingFactor ?: 0,
+            radioCodingRate = _lastRadioConfig.value?.codingRate ?: existing?.radioCodingRate ?: 0,
             radioTxPowerDbm = _lastRadioConfig.value?.txPowerDbm ?: existing?.radioTxPowerDbm ?: 0,
             contacts = _contacts.value.map { it.toPersisted() },
             channels = _channels.value.map { it.toPersisted() },
@@ -2042,6 +2045,8 @@ data class StoredRadioConfig(
     val bandwidthHz: Int,
     val spreadingFactor: Int,
     val txPowerDbm: Int,
+    /** 0 on stores written before the coding rate was remembered. */
+    val codingRate: Int = 0,
 )
 
 internal fun MeshFrame.Contact.toContact(): Contact = Contact(

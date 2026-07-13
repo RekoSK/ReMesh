@@ -45,15 +45,19 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.widget.Toast
 import com.rekosk.remesh.R
+import com.rekosk.remesh.data.OnlineMapNode
 import com.rekosk.remesh.data.model.NodePosition
 import com.rekosk.remesh.data.model.NodeType
 import com.rekosk.remesh.ui.MeshViewModel
 import com.rekosk.remesh.ui.components.MeshTopBarActions
+import com.rekosk.remesh.ui.components.OnlineMapToggle
 import com.rekosk.remesh.ui.components.OverflowNav
 import com.rekosk.remesh.ui.components.avatarColor
 import com.rekosk.remesh.ui.components.avatarGlyph
 import com.rekosk.remesh.ui.components.color
+import com.rekosk.remesh.ui.theme.NodeColors
 import kotlin.math.ceil
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -76,6 +80,7 @@ fun MapScreen(
     viewModel: MeshViewModel,
     overflow: OverflowNav,
     onOpenContact: (String) -> Unit = {},
+    onOpenOnlineNode: (OnlineMapNode) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -86,6 +91,9 @@ fun MapScreen(
     // same on the map as it does on a contact row.
     val backingArgb = MaterialTheme.colorScheme.background.toArgb()
     val positions by viewModel.nodePositions.collectAsStateWithLifecycle()
+    val onlineEnabled by viewModel.onlineNodesEnabled.collectAsStateWithLifecycle()
+    val onlineNodes by viewModel.onlineMapNodes.collectAsStateWithLifecycle()
+    val isLoadingOnline by viewModel.isLoadingOnlineNodes.collectAsStateWithLifecycle()
 
     // The repeater "PFP" is a cell-tower glyph, drawn white into the marker disc.
     val towerIcon = remember {
@@ -138,6 +146,11 @@ fun MapScreen(
                         onAdvert = viewModel::sendAdvert,
                         selfContactUri = viewModel::selfContactUri,
                         overflow = overflow,
+                        onlineMap = OnlineMapToggle(enabled = onlineEnabled) {
+                            viewModel.toggleOnlineNodes { message ->
+                                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                            }
+                        },
                     )
                 },
             )
@@ -155,6 +168,11 @@ fun MapScreen(
                             node.toMarker(view, dark, primaryArgb, backingArgb, towerIcon, now, onOpenContact),
                         )
                     }
+                    onlineNodes.forEach { node ->
+                        view.overlays.add(
+                            node.toOnlineMarker(view, dark, backingArgb, towerIcon, onOpenOnlineNode),
+                        )
+                    }
                     if (!centered[0]) {
                         val focus = positions.firstOrNull { it.isSelf } ?: positions.firstOrNull()
                         if (focus != null) {
@@ -168,6 +186,7 @@ fun MapScreen(
             )
 
             if (positions.isEmpty()) MapEmptyHint()
+            if (isLoadingOnline) MapLoadingIndicator("Loading online nodes…")
             MapAttribution(Modifier.align(Alignment.BottomStart))
         }
     }
@@ -212,6 +231,37 @@ private fun NodePosition.toMarker(
     }
 }
 
+/**
+ * The pin for a node fetched from the public online map (map.meshcore.io): the same
+ * avatar disc a contact would get -- its colour seeded with the contact id the node
+ * would have -- plus a green "online" dot on the disc and "name  •  online" in the
+ * pill. Tapping it opens the unsaved node's contact menu.
+ */
+private fun OnlineMapNode.toOnlineMarker(
+    map: MapView,
+    dark: Boolean,
+    backingArgb: Int,
+    towerIcon: Drawable?,
+    onOpen: (OnlineMapNode) -> Unit,
+): Marker = Marker(map).also { marker ->
+    val tint = if (type == NodeType.CHAT) avatarColor(contactId, dark).toArgb() else type.color().toArgb()
+    val tower = if (type == NodeType.REPEATER) towerIcon else null
+    val label = "${name.trim().ifBlank { "(unnamed)" }.take(24)}  •  online"
+    val art = nodeMarkerBitmap(
+        map, label, tint, avatarGlyph(name), tower,
+        tonal = true, backingArgb = backingArgb, onlineBadge = true,
+    )
+
+    marker.position = GeoPoint(latitude, longitude)
+    marker.icon = BitmapDrawable(map.resources, art.bitmap)
+    marker.setAnchor(0.5f, art.anchorV)
+    marker.infoWindow = null
+    marker.setOnMarkerClickListener { _, _ ->
+        onOpen(this)
+        true
+    }
+}
+
 /** A rendered marker plus the vertical anchor that puts the disc centre on the fix. */
 internal class MarkerArt(val bitmap: Bitmap, val anchorV: Float)
 
@@ -228,6 +278,8 @@ internal fun nodeMarkerBitmap(
     towerIcon: Drawable?,
     tonal: Boolean,
     backingArgb: Int,
+    /** Draws the small green "online" dot on the disc's bottom-right. */
+    onlineBadge: Boolean = false,
 ): MarkerArt {
     val d = map.resources.displayMetrics.density
     val diameter = 40f * d
@@ -287,6 +339,20 @@ internal fun nodeMarkerBitmap(
         }
         val baseline = circleCy - (glyphPaint.descent() + glyphPaint.ascent()) / 2f
         canvas.drawText(glyph, cx, baseline, glyphPaint)
+    }
+
+    if (onlineBadge) {
+        // Bottom-right of the disc (45° off centre), ringed with the backing colour so
+        // the dot stays legible over any avatar tint.
+        val badgeCx = cx + radius * 0.707f
+        val badgeCy = circleCy + radius * 0.707f
+        val badgeRadius = 4.5f * d
+        canvas.drawCircle(badgeCx, badgeCy, badgeRadius + 1.5f * d, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = backingArgb
+        })
+        canvas.drawCircle(badgeCx, badgeCy, badgeRadius, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = NodeColors.Online.toArgb()
+        })
     }
 
     val pillTop = circleOuter + gap

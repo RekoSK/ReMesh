@@ -13,4 +13,7 @@ object NodeColors {
     val Sensor = Color(0xFFFF6D00)
     val Group = Color(0xFF00897B)
     val Public = Color(0xFF2E7D32)
+
+    /** The 🟢 status dot on an online-map marker's avatar. */
+    val Online = Color(0xFF4CAF50)
 }

@@ -12,9 +12,11 @@ import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Podcasts
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.SettingsInputAntenna
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -36,6 +38,12 @@ data class OverflowNav(
     val onTools: () -> Unit,
 )
 
+/** The Map screen's "Online map" overflow toggle; the other screens pass null. */
+data class OnlineMapToggle(
+    val enabled: Boolean,
+    val onToggle: () -> Unit,
+)
+
 /**
  * The action row shared by Contacts, Channels and Map, so the three top bars
  * never drift apart. Left to right: Advert, overflow.
@@ -48,6 +56,7 @@ fun MeshTopBarActions(
     onAdvert: (flood: Boolean) -> Unit,
     selfContactUri: () -> String?,
     overflow: OverflowNav,
+    onlineMap: OnlineMapToggle? = null,
 ) {
     val context = LocalContext.current
     var advertMenuOpen by remember { mutableStateOf(false) }
@@ -93,6 +102,20 @@ fun MeshTopBarActions(
             Icon(Icons.Filled.MoreVert, contentDescription = "More")
         }
         DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+            if (onlineMap != null) {
+                DropdownMenuItem(
+                    leadingIcon = { Icon(Icons.Filled.Public, contentDescription = null) },
+                    trailingIcon = {
+                        // Display-only: the whole row is the click target.
+                        Checkbox(checked = onlineMap.enabled, onCheckedChange = null)
+                    },
+                    text = { Text("Online map") },
+                    onClick = {
+                        overflowOpen = false
+                        onlineMap.onToggle()
+                    },
+                )
+            }
             OverflowItem(Icons.Filled.PersonAdd, "Add contact") {
                 overflowOpen = false
                 overflow.onAddContact()

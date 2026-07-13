@@ -240,6 +240,14 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                     onOpenContact = { contactId ->
                         navController.navigate("$ROUTE_CONTACT_DETAIL/$contactId")
                     },
+                    // An online-map node is never in the contact list (the map drops
+                    // those), so this always lands on the unsaved-node contact menu.
+                    onOpenOnlineNode = { node ->
+                        val key = node.publicKeyHex.chunked(2)
+                            .map { it.toInt(16).toByte() }
+                            .toByteArray()
+                        navController.navigate(nodeDetailRoute(key, node.type, node.name))
+                    },
                 )
             }
             composable(ROUTE_CONNECT) {
