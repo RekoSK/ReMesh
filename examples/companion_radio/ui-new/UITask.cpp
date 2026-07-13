@@ -2571,6 +2571,11 @@ bool UITask::sendComposedText(const MsgRowKey& key, const char* text) {
   if (!the_mesh.sendGroupMessage(ts, ch.channel, the_mesh.getNodeName(), text, strlen(text)))
     return false;
   _msgs.add(key.channel_idx, the_mesh.getNodeName(), text, ts);   // local echo
+
+  // echo to the phone app too, in the on-air "<sender>: <body>" format
+  char full[MAX_FRAME_SIZE];
+  snprintf(full, sizeof(full), "%s: %s", the_mesh.getNodeName(), text);
+  the_mesh.queueSelfChannelMsg(key.channel_idx, full, ts);
   return true;
 }
 

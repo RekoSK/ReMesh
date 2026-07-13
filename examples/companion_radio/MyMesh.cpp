@@ -606,6 +606,39 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
 #endif
 }
 
+// Same frame layout as onChannelMessageRecv, but for a message this device just
+// sent from its own UI (e.g. the Morse composer), so the phone app can show it in
+// the channel. SNR 0 and path_len 0: it never crossed the air to reach us.
+void MyMesh::queueSelfChannelMsg(uint8_t channel_idx, const char *text, uint32_t timestamp) {
+  int i = 0;
+  if (app_target_ver >= 3) {
+    out_frame[i++] = RESP_CODE_CHANNEL_MSG_RECV_V3;
+    out_frame[i++] = 0; // SNR x4
+    out_frame[i++] = 0; // reserved1
+    out_frame[i++] = 0; // reserved2
+  } else {
+    out_frame[i++] = RESP_CODE_CHANNEL_MSG_RECV;
+  }
+  out_frame[i++] = channel_idx;
+  out_frame[i++] = 0; // path_len: local, zero hops
+  out_frame[i++] = TXT_TYPE_PLAIN;
+  memcpy(&out_frame[i], &timestamp, 4);
+  i += 4;
+  int tlen = strlen(text);
+  if (i + tlen > MAX_FRAME_SIZE) {
+    tlen = MAX_FRAME_SIZE - i;
+  }
+  memcpy(&out_frame[i], text, tlen);
+  i += tlen;
+  addToOfflineQueue(out_frame, i);
+
+  if (_serial->isConnected()) {
+    uint8_t frame[1];
+    frame[0] = PUSH_CODE_MSG_WAITING; // send push 'tickle'
+    _serial->writeFrame(frame, 1);
+  }
+}
+
 void MyMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint16_t data_type,
                                const uint8_t *data, size_t data_len) {
   if (data_len > MAX_CHANNEL_DATA_LENGTH) {

@@ -115,6 +115,11 @@ public:
   bool addRepeaterContact(const uint8_t* pub_key, const char* name);
   void enterCLIRescue();
 
+  // Make a device-composed channel message visible to the phone app: enqueue it
+  // exactly like a received channel message (text must be "<sender>: <body>",
+  // the on-air format) and tickle the app if it's connected.
+  void queueSelfChannelMsg(uint8_t channel_idx, const char* text, uint32_t timestamp);
+
   int  getRecentlyHeard(AdvertPath dest[], int max_num);
 
   // Sorted view over the RAM advert-path table, without copying it. Call
