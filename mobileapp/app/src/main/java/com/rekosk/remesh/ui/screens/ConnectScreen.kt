@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -35,7 +37,6 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
@@ -49,6 +50,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -60,6 +62,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -72,6 +75,8 @@ import com.rekosk.remesh.ble.ConnectionState
 import com.rekosk.remesh.ble.DiscoveredDevice
 import com.rekosk.remesh.ble.MeshFrame
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first
 import com.rekosk.remesh.data.SavedNodeSummary
 import com.rekosk.remesh.ui.MeshViewModel
 import com.rekosk.remesh.data.model.NodeType
@@ -174,15 +179,6 @@ fun ConnectScreen(
                             },
                         )
                     },
-                    actions = {
-                        // Manual refresh: kick off a search for the node right now
-                        // instead of waiting for the next automatic scan window.
-                        if (hasNode && !showPicker && state !is ConnectionState.Ready) {
-                            IconButton(onClick = viewModel::refreshNodeSearch) {
-                                Icon(Icons.Filled.Refresh, contentDescription = "Search for node")
-                            }
-                        }
-                    },
                 )
                 AnimatedVisibility(visible = state is ConnectionState.Scanning) {
                     LinearWavyProgressIndicator(
@@ -207,20 +203,45 @@ fun ConnectScreen(
 
                 // The default "Me" view once a node has ever been connected: its saved
                 // (offline) values with a live status line; the picker is behind Switch.
-                hasNode && !showPicker -> NodePanel(
-                    deviceName = selfName
-                        ?: (state as? ConnectionState.Ready)?.deviceName
-                        ?: savedNodes.maxByOrNull { it.lastConnectedEpochMs }?.name
-                        ?: "(node)",
-                    status = nodeStatus(state, isSyncing),
-                    connected = connected,
-                    rssi = connectionRssi,
-                    battery = storage,
-                    hasPendingSettings = pendingSettings != null,
-                    onDisconnect = viewModel::disconnect,
-                    onOpenSettings = onOpenSettings,
-                    onSwitch = { showPicker = true },
-                )
+                // Pulling down starts a search for the node right now.
+                hasNode && !showPicker -> {
+                    var pullRefreshing by remember { mutableStateOf(false) }
+                    LaunchedEffect(pullRefreshing) {
+                        if (pullRefreshing) {
+                            // Spin until the scan window this pull started is over.
+                            withTimeoutOrNull(3_000) {
+                                snapshotFlow { state }.first { it is ConnectionState.Scanning }
+                            }
+                            snapshotFlow { state }.first { it !is ConnectionState.Scanning }
+                            pullRefreshing = false
+                        }
+                    }
+                    PullToRefreshBox(
+                        isRefreshing = pullRefreshing,
+                        onRefresh = {
+                            if (!connected) {
+                                pullRefreshing = true
+                                viewModel.refreshNodeSearch()
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        NodePanel(
+                            deviceName = selfName
+                                ?: (state as? ConnectionState.Ready)?.deviceName
+                                ?: savedNodes.maxByOrNull { it.lastConnectedEpochMs }?.name
+                                ?: "(node)",
+                            status = nodeStatus(state, isSyncing),
+                            connected = connected,
+                            rssi = connectionRssi,
+                            battery = storage,
+                            hasPendingSettings = pendingSettings != null,
+                            onDisconnect = viewModel::disconnect,
+                            onOpenSettings = onOpenSettings,
+                            onSwitch = { showPicker = true },
+                        )
+                    }
+                }
 
                 state is ConnectionState.Bonding || state is ConnectionState.Connecting ||
                     state is ConnectionState.Discovering -> Box(
@@ -317,6 +338,8 @@ private fun NodePanel(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            // Scrollable so the pull-to-refresh gesture above has something to grab.
+            .verticalScroll(rememberScrollState())
             .padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
