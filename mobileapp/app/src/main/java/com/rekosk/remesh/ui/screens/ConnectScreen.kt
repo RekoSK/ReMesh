@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.BatteryUnknown
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Router
 import androidx.compose.material.icons.filled.Settings
@@ -172,6 +173,15 @@ fun ConnectScreen(
                                 else -> "Me"
                             },
                         )
+                    },
+                    actions = {
+                        // Manual refresh: kick off a search for the node right now
+                        // instead of waiting for the next automatic scan window.
+                        if (hasNode && !showPicker && state !is ConnectionState.Ready) {
+                            IconButton(onClick = viewModel::refreshNodeSearch) {
+                                Icon(Icons.Filled.Refresh, contentDescription = "Search for node")
+                            }
+                        }
                     },
                 )
                 AnimatedVisibility(visible = state is ConnectionState.Scanning) {

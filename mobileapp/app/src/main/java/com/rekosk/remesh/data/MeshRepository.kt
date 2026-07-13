@@ -313,6 +313,15 @@ class MeshRepository(
     @Volatile
     private var autoReconnectSuppressed = false
 
+    // Pokes the loop out of its rest delay, so a manual refresh searches immediately.
+    private val autoReconnectNudge = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+
+    /** Starts a search/connect cycle right now (the Me tab's manual refresh). */
+    fun nudgeAutoReconnect() {
+        autoReconnectSuppressed = false
+        autoReconnectNudge.tryEmit(Unit)
+    }
+
     /**
      * Arms the "come back to my node" behaviour: the most recently connected node's saved
      * data is put on screen right away (its offline values), and while there is no live
@@ -343,12 +352,12 @@ class MeshRepository(
                         it is ConnectionState.Scanning
                 }
                 if (address == null || !idle || autoReconnectSuppressed) {
-                    delay(5_000)
+                    restOrNudge(5_000)
                     continue
                 }
                 // One scan window; missing BLE permission etc. just means "try later".
                 if (runCatching { client.startScan() }.isFailure) {
-                    delay(15_000)
+                    restOrNudge(15_000)
                     continue
                 }
                 val seen = withTimeoutOrNull(20_000) {
@@ -359,10 +368,15 @@ class MeshRepository(
                     // Connect + handshake; a failure simply leaves us in the loop.
                     runCatching { connect(address) }
                 } else {
-                    delay(15_000) // node not around; rest between scan windows
+                    restOrNudge(15_000) // node not around; rest between scan windows
                 }
             }
         }
+    }
+
+    /** Sleeps between reconnect cycles, but wakes early on a manual refresh nudge. */
+    private suspend fun restOrNudge(ms: Long) {
+        withTimeoutOrNull(ms) { autoReconnectNudge.first() }
     }
 
     /** Asks the BLE stack for a fresh link-RSSI reading; result lands in [connectionRssi]. */

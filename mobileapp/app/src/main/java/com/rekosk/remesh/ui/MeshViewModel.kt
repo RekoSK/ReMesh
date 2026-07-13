@@ -245,6 +245,9 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startScan() = repository.startScan()
     fun stopScan() = repository.stopScan()
+
+    /** Manual refresh on the Me tab: search for the last node right now. */
+    fun refreshNodeSearch() = repository.nudgeAutoReconnect()
     fun readConnectionRssi() = repository.readConnectionRssi()
     fun clearError() = repository.clearError()
 
