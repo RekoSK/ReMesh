@@ -62,3 +62,26 @@ signal-coverage points.
   "brighter than the contacts" — the user explicitly does not want that.
 - Node-type accents (repeater amber `F39C12`, etc.) live in `NodeColors`
   (`ui/theme/Color.kt`) and are used for non-chat node types.
+
+## 6. Loading indicators (always use these, never plain spinners)
+The user wants the **Material 3 expressive** loaders everywhere, consistently:
+
+- **Themed morphing shape** — `androidx.compose.material3.LoadingIndicator`
+  (`@OptIn(ExperimentalMaterial3ExpressiveApi::class)`). NEVER use plain
+  `CircularProgressIndicator`. Variants already in the app:
+  - **Over a map / full-screen wait**: centred on a rounded backdrop —
+    `Surface(color = surfaceContainerHigh.copy(alpha = 0.92f), shape =
+    RoundedCornerShape(...))` + `LoadingIndicator` (+ optional label). See
+    `MapLoadingIndicator` in `ui/screens/LineOfSightScreen.kt` (shared by the
+    map tools) and the online-map loader in `MapScreen.kt`. A loading indicator
+    should always sit on this backdrop, not naked over content.
+  - **Inline / small (menu or sheet header)**: bare `LoadingIndicator` at
+    ~28 dp next to the title — see the coverage points sheet in
+    `SignalCoverageScreen.kt`.
+  - **Pull-to-refresh**: `PullToRefreshBox` with `indicator =
+    { PullToRefreshDefaults.LoadingIndicator(state, isRefreshing, ...) }` —
+    see the Me panel in `ConnectScreen.kt`.
+- **"Snake-like" wavy bar** — `androidx.compose.material3.LinearWavyProgressIndicator`
+  for indeterminate line-style progress (e.g. under a top bar while scanning) —
+  see `ConnectScreen.kt`. Use it instead of `LinearProgressIndicator` wherever a
+  horizontal loading bar is needed.
