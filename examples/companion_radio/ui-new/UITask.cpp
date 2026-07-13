@@ -643,14 +643,14 @@ class HomeScreen : public UIScreen {
       scrollToSelection();
       return true;
     }
-    if (c == KEY_ENTER) {            // long-press again: give control back
-      _chan_control = false;
-      return true;
-    }
-    if (c == KEY_PREV || c == KEY_LEFT) {   // double-click: open the channel
+    if (c == KEY_ENTER) {            // long-press: open the channel
       if (_num_rows > 0) {
         _task->openChannelView(_rows[_chan_sel].key, _rows[_chan_sel].name);
       }
+      return true;
+    }
+    if (c == KEY_PREV || c == KEY_LEFT) {   // double-click: give control back
+      _chan_control = false;
       return true;
     }
     return true;   // swallow everything else while in control
