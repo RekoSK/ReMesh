@@ -51,6 +51,8 @@ import androidx.compose.material3.LinearWavyProgressIndicator
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -216,6 +218,7 @@ fun ConnectScreen(
                             pullRefreshing = false
                         }
                     }
+                    val pullState = rememberPullToRefreshState()
                     PullToRefreshBox(
                         isRefreshing = pullRefreshing,
                         onRefresh = {
@@ -223,6 +226,15 @@ fun ConnectScreen(
                                 pullRefreshing = true
                                 viewModel.refreshNodeSearch()
                             }
+                        },
+                        state = pullState,
+                        // The themed (expressive) loading shape, like every other menu.
+                        indicator = {
+                            PullToRefreshDefaults.LoadingIndicator(
+                                state = pullState,
+                                isRefreshing = pullRefreshing,
+                                modifier = Modifier.align(Alignment.TopCenter),
+                            )
                         },
                         modifier = Modifier.fillMaxSize(),
                     ) {
