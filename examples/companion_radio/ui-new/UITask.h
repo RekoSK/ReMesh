@@ -80,6 +80,7 @@ class UITask : public AbstractUITask {
   UIScreen* splash;
   UIScreen* home;
   UIScreen* chan_view;
+  UIScreen* morse_view;
   UIScreen* node_info;
   UIScreen* path_view;
   UIScreen* matches_view;
@@ -147,6 +148,10 @@ public:
 
   void openChannelView(const MsgRowKey& key, const char* title);
   void closeChannelView();       // marks read, returns to Channels page keeping control
+  void openMorseCompose(const MsgRowKey& key, const char* title);
+  void closeMorseCompose();      // back to the channel reading view
+  bool sendComposedText(const MsgRowKey& key, const char* text);
+  bool isDisplayOn() const { return _display != NULL && _display->isOn(); }
   void gotoBluetoothScreen();    // used when a peer starts pairing
 
   void openNodeInfo(const ScanResult& r);          // from the Scan page

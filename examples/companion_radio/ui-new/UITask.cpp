@@ -101,6 +101,77 @@ static void uiRenderMenu(DisplayDriver& display, const char* const* items, int n
   }
 }
 
+// Like uiRenderMenu, but only shows a window of 'max_visible' rows starting at
+// 'scroll', with a scrollbar knob on the right when the list is longer. Used by
+// menus with more entries than fit the content area (e.g. the Morse options).
+static void uiRenderScrollMenu(DisplayDriver& display, const char* const* items, int n,
+                               int sel, int scroll, int max_visible) {
+  int vis = n < max_visible ? n : max_visible;
+  if (scroll < 0) scroll = 0;
+  if (scroll > n - vis) scroll = n - vis;
+
+  const int bx = 4, bw = display.width() - 8;
+  const int bh = 11 * vis + 4;
+  int by = 14 + (50 - bh) / 2;
+  if (by < 13) by = 13;
+
+  display.setColor(DisplayDriver::DARK);
+  display.fillRect(bx, by, bw, bh);
+  display.setColor(DisplayDriver::LIGHT);
+  display.drawRect(bx, by, bw, bh);
+
+  display.setTextSize(1);
+  const int inner_w = (n > vis) ? bw - 4 : bw - 2;   // leave room for the scrollbar
+  for (int i = 0; i < vis; i++) {
+    int idx = scroll + i;
+    int y = by + 4 + i * 11;
+    if (idx == sel) {
+      display.setColor(DisplayDriver::LIGHT);
+      display.fillRect(bx + 1, y - 2, inner_w, 11);
+      display.setColor(DisplayDriver::DARK);
+    } else {
+      display.setColor(DisplayDriver::LIGHT);
+    }
+    display.drawTextEllipsized(bx + 3, y, inner_w - 4, items[idx]);
+  }
+
+  if (n > vis) {   // scrollbar knob, same idea as the Channels list
+    display.setColor(DisplayDriver::LIGHT);
+    int track_h = bh - 2;
+    int knob_h = track_h * vis / n;
+    if (knob_h < 3) knob_h = 3;
+    int knob_y = by + 1 + (track_h - knob_h) * scroll / (n - vis);
+    display.fillRect(bx + bw - 2, knob_y, 1, knob_h);
+  }
+}
+
+// --- International Morse code, letters and digits ---
+static const char* const MORSE_ALPHA[26] = {
+  ".-",   "-...", "-.-.", "-..",  ".",    "..-.", "--.",  "....", "..",   ".---",
+  "-.-",  ".-..", "--",   "-.",   "---",  ".--.", "--.-", ".-.",  "...",  "-",
+  "..-",  "...-", ".--",  "-..-", "-.--", "--.."
+};
+static const char* const MORSE_DIGIT[10] = {
+  "-----", ".----", "..---", "...--", "....-",
+  ".....", "-....", "--...", "---..", "----."
+};
+
+// Morse for one character; "" for space / anything we don't encode.
+static const char* morseForChar(char ch) {
+  if (ch >= 'a' && ch <= 'z') ch -= ('a' - 'A');
+  if (ch >= 'A' && ch <= 'Z') return MORSE_ALPHA[ch - 'A'];
+  if (ch >= '0' && ch <= '9') return MORSE_DIGIT[ch - '0'];
+  return "";
+}
+
+// Decode a dot/dash string to a character; '?' if it isn't a known code.
+static char charForMorse(const char* code) {
+  if (code == NULL || code[0] == 0) return '?';
+  for (int i = 0; i < 26; i++) if (strcmp(code, MORSE_ALPHA[i]) == 0) return 'A' + i;
+  for (int i = 0; i < 10; i++) if (strcmp(code, MORSE_DIGIT[i]) == 0) return '0' + i;
+  return '?';
+}
+
 #if ENV_INCLUDE_GPS == 1
 #include <math.h>
 
@@ -1440,13 +1511,19 @@ public:
 //   |hello there       |
 //   +------------------+
 //
-// click = scroll down, double-click = scroll up, long-press = back.
+// click = scroll down, double-click = scroll up, long-press = options popup
+// (Back / Send w/morsecode / Exit).
 class ChannelViewScreen : public UIScreen {
   UITask* _task;
   MsgRowKey _key;
   char _title[UI_MSG_SENDER_LEN];
   int _scroll;
   bool _stick_to_bottom;
+
+  // long-press popup: Back / Send w/morsecode / Exit
+  bool _menu;
+  int  _menu_sel;
+  static const int CHVIEW_MENU_ITEMS = 3;
 
   static const int LINE_H  = 10;
   static const int BODY_Y  = 14;
@@ -1473,7 +1550,8 @@ class ChannelViewScreen : public UIScreen {
   }
 
 public:
-  ChannelViewScreen(UITask* task) : _task(task), _scroll(0), _stick_to_bottom(true) {
+  ChannelViewScreen(UITask* task) : _task(task), _scroll(0), _stick_to_bottom(true),
+                                    _menu(false), _menu_sel(0) {
     _key.channel_idx = DM_CHANNEL;
     _key.sender[0] = 0;
     _title[0] = 0;
@@ -1485,7 +1563,11 @@ public:
     _title[sizeof(_title) - 1] = 0;
     _scroll = 0;
     _stick_to_bottom = true;   // start at the newest message
+    _menu = false;
   }
+
+  // reopen the reading view after composing, keeping the same channel/scroll
+  void reopen() { _menu = false; _stick_to_bottom = true; }
 
   const MsgRowKey& key() const { return _key; }
 
@@ -1558,10 +1640,33 @@ public:
       line++;   // spacer
       if (line >= _scroll + VISIBLE) break;   // rest is below the viewport
     }
+
+    if (_menu) {
+      static const char* items[CHVIEW_MENU_ITEMS] = { "Back", "Send w/morsecode", "Exit" };
+      uiRenderMenu(display, items, CHVIEW_MENU_ITEMS, _menu_sel);
+    }
     return 1000;
   }
 
   bool handleInput(char c) override {
+    if (_menu) {                                 // popup is modal
+      if (c == KEY_NEXT || c == KEY_RIGHT) {
+        _menu_sel = (_menu_sel + 1) % CHVIEW_MENU_ITEMS;
+        return true;
+      }
+      if (c == KEY_PREV || c == KEY_LEFT) {
+        _menu_sel = (_menu_sel + CHVIEW_MENU_ITEMS - 1) % CHVIEW_MENU_ITEMS;
+        return true;
+      }
+      if (c == KEY_ENTER) {
+        int sel = _menu_sel;
+        _menu = false;
+        if (sel == 1)      _task->openMorseCompose(_key, _title);   // Send w/morsecode
+        else if (sel == 2) _task->closeChannelView();               // Exit the channel
+        return true;                                                // sel == 0 (Back) just closes
+      }
+      return true;
+    }
     if (c == KEY_NEXT || c == KEY_RIGHT) {       // click -> scroll down
       _scroll++;
       _stick_to_bottom = false;
@@ -1572,11 +1677,328 @@ public:
       _stick_to_bottom = false;
       return true;
     }
-    if (c == KEY_ENTER) {                        // long-press -> back
-      _task->closeChannelView();
+    if (c == KEY_ENTER) {                        // long-press -> options popup
+      _menu = true;
+      _menu_sel = 0;
       return true;
     }
     return false;
+  }
+};
+
+// Compose a message by tapping Morse code on the single button, then send it to
+// the channel (as raw Morse, or as the decoded text).
+//
+// Timing (poll() reads the button directly, independent of the click/long-press
+// detector the rest of the UI uses):
+//   * a short press is a dot, a longer one a dash
+//   * a gap after a symbol commits the letter; a longer gap adds a word space
+//   * holding the button ~5s opens the options popup
+//
+// The middle of the screen shows the Morse so far (letters separated by spaces,
+// words by "/") with the decoded letter under each code.
+class MorseComposeScreen : public UIScreen {
+  UITask* _task;
+  MsgRowKey _key;
+  char _title[UI_MSG_SENDER_LEN];
+
+  static const int MSG_MAX = 60;
+  char _text[MSG_MAX + 1];   // decoded message so far (letters and spaces)
+  int  _text_len;
+  char _symbols[8];          // dots/dashes of the letter currently being tapped
+  int  _sym_len;
+
+  // --- raw button timing ---
+  bool _armed;               // wait for a release before typing (skip the entry press)
+  bool _pressed;             // last sampled button state
+  bool _press_is_menu;       // this hold already opened the menu; ignore its release
+  unsigned long _press_start;
+  unsigned long _last_release_ms;
+
+  static const int DOT_MAX_MS    = 250;    // press up to here = dot, longer = dash
+  static const int LETTER_GAP_MS = 900;    // idle that ends a letter
+  static const int WORD_GAP_MS   = 2200;   // idle that adds a word space
+  static const unsigned long MENU_HOLD_MS = 5000;  // hold to open the options menu
+
+  // --- options popup (opened by the 5s hold) ---
+  bool _menu;
+  int  _menu_sel;
+  int  _menu_scroll;
+  static const int MENU_ITEMS   = 7;
+  static const int MENU_VISIBLE = 4;
+
+  static const int MORSE_Y = 24;
+  static const int LABEL_Y = 40;
+
+  void resetTiming() {
+    _pressed = false;
+    _press_is_menu = false;
+    _press_start = 0;
+    _last_release_ms = millis();
+  }
+
+  void commitLetter() {
+    if (_sym_len == 0) return;
+    if (_text_len < MSG_MAX) {
+      _text[_text_len++] = charForMorse(_symbols);
+      _text[_text_len] = 0;
+    }
+    _sym_len = 0;
+    _symbols[0] = 0;
+  }
+
+  void appendChar(char ch) {
+    if (_text_len < MSG_MAX) {
+      _text[_text_len++] = ch;
+      _text[_text_len] = 0;
+    }
+  }
+
+  void removeLastLetter() {
+    if (_sym_len > 0) { _sym_len = 0; _symbols[0] = 0; return; }
+    while (_text_len > 0 && _text[_text_len - 1] == ' ') _text_len--;
+    if (_text_len > 0) _text_len--;
+    _text[_text_len] = 0;
+  }
+
+  void removeLastWord() {
+    _sym_len = 0; _symbols[0] = 0;
+    while (_text_len > 0 && _text[_text_len - 1] == ' ') _text_len--;
+    while (_text_len > 0 && _text[_text_len - 1] != ' ') _text_len--;
+    while (_text_len > 0 && _text[_text_len - 1] == ' ') _text_len--;
+    _text[_text_len] = 0;
+  }
+
+  void discard() {
+    _text_len = 0; _text[0] = 0;
+    _sym_len = 0; _symbols[0] = 0;
+  }
+
+  // Build the outgoing string: the decoded text, or the Morse for it (letters
+  // separated by spaces, words by "/").
+  void buildOutgoing(bool as_morse, char* out, size_t out_sz) {
+    if (!as_morse) {
+      strncpy(out, _text, out_sz - 1);
+      out[out_sz - 1] = 0;
+      return;
+    }
+    size_t p = 0;
+    for (int i = 0; i < _text_len && p < out_sz - 1; i++) {
+      const char* tok = (_text[i] == ' ') ? "/" : morseForChar(_text[i]);
+      if (tok[0] == 0) continue;
+      if (p > 0 && p < out_sz - 1) out[p++] = ' ';
+      for (int j = 0; tok[j] && p < out_sz - 1; j++) out[p++] = tok[j];
+    }
+    out[p] = 0;
+  }
+
+  void send(bool as_morse) {
+    commitLetter();
+    if (_text_len == 0) { _task->showAlert("Nothing to send", 1000); closeMenuToTyping(); return; }
+    char out[MSG_MAX * 6 + 1];
+    buildOutgoing(as_morse, out, sizeof(out));
+    if (_task->sendComposedText(_key, out)) {
+      _task->showAlert(as_morse ? "Sent as Morse" : "Sent as text", 1200);
+      _menu = false;
+      _task->closeMorseCompose();
+    } else {
+      _task->showAlert("Send failed", 1500);
+      closeMenuToTyping();
+    }
+  }
+
+  void openMenu() {
+    _menu = true;
+    _menu_sel = 0;
+    _menu_scroll = 0;
+  }
+
+  // back to typing: wait for the button to be released before sampling again, so
+  // the press that drove the menu isn't read as a symbol
+  void closeMenuToTyping() {
+    _menu = false;
+    _armed = false;
+    resetTiming();
+  }
+
+  void scrollMenu() {
+    if (_menu_sel < _menu_scroll) _menu_scroll = _menu_sel;
+    if (_menu_sel >= _menu_scroll + MENU_VISIBLE) _menu_scroll = _menu_sel - MENU_VISIBLE + 1;
+    if (_menu_scroll < 0) _menu_scroll = 0;
+  }
+
+public:
+  MorseComposeScreen(UITask* task) : _task(task) {
+    _key.channel_idx = DM_CHANNEL;
+    _key.sender[0] = 0;
+    _title[0] = 0;
+    discard();
+    _menu = false; _menu_sel = 0; _menu_scroll = 0;
+    _armed = true; resetTiming();
+  }
+
+  void open(const MsgRowKey& key, const char* title) {
+    _key = key;
+    strncpy(_title, title ? title : "", sizeof(_title) - 1);
+    _title[sizeof(_title) - 1] = 0;
+    discard();
+    _menu = false; _menu_sel = 0; _menu_scroll = 0;
+    _armed = !_task->isButtonPressed();   // skip the press that opened this screen
+    resetTiming();
+    _pressed = _task->isButtonPressed();
+  }
+
+  void poll() override {
+    if (_menu) { _pressed = false; return; }   // menu is driven by button events
+
+    bool down = _task->isButtonPressed();
+
+    if (!_armed) {                 // waiting for a release before we start sampling
+      if (!down) _armed = true;
+      _pressed = down;
+      return;
+    }
+    if (!_task->isDisplayOn()) {   // a press that only woke the screen must not type
+      _armed = false;
+      _pressed = down;
+      return;
+    }
+
+    unsigned long now = millis();
+
+    if (down && !_pressed) {                     // press edge
+      _press_start = now;
+      _press_is_menu = false;
+    } else if (down && _pressed) {               // held
+      if (!_press_is_menu && (now - _press_start) >= MENU_HOLD_MS) {
+        _press_is_menu = true;
+        openMenu();
+        _pressed = down;
+        return;
+      }
+    } else if (!down && _pressed) {              // release edge
+      if (!_press_is_menu) {
+        unsigned long dur = now - _press_start;
+        if (_sym_len < (int)sizeof(_symbols) - 1) {
+          _symbols[_sym_len++] = (dur < DOT_MAX_MS) ? '.' : '-';
+          _symbols[_sym_len] = 0;
+        }
+        _last_release_ms = now;
+      }
+    }
+    _pressed = down;
+
+    if (!down) {                                 // gaps only matter while released
+      unsigned long idle = now - _last_release_ms;
+      if (_sym_len > 0 && idle >= LETTER_GAP_MS) commitLetter();
+      if (_sym_len == 0 && _text_len > 0 && _text[_text_len - 1] != ' ' && idle >= WORD_GAP_MS)
+        appendChar(' ');
+    }
+  }
+
+  // while typing, the button is read directly in poll(); once the options popup
+  // is open we want the normal click/long-press navigation again
+  bool rawButtonInput() override { return !_menu; }
+
+  bool handleInput(char c) override {
+    if (!_menu) return true;   // typing is handled in poll(); swallow stray events
+
+    if (c == KEY_NEXT || c == KEY_RIGHT) { _menu_sel = (_menu_sel + 1) % MENU_ITEMS; scrollMenu(); return true; }
+    if (c == KEY_PREV || c == KEY_LEFT)  { _menu_sel = (_menu_sel + MENU_ITEMS - 1) % MENU_ITEMS; scrollMenu(); return true; }
+    if (c == KEY_ENTER) {
+      switch (_menu_sel) {
+        case 0: closeMenuToTyping(); break;                 // Back
+        case 1: removeLastLetter(); closeMenuToTyping(); break;
+        case 2: removeLastWord();   closeMenuToTyping(); break;
+        case 3: send(true);  break;                         // Send as MC
+        case 4: send(false); break;                         // Send as text
+        case 5: discard(); closeMenuToTyping(); break;      // Discard
+        case 6: _menu = false; _task->closeMorseCompose(); break;   // Exit
+      }
+      return true;
+    }
+    return true;
+  }
+
+  int render(DisplayDriver& display) override {
+    display.setTextSize(1);
+    display.setColor(DisplayDriver::LIGHT);
+    char filtered[UI_MSG_SENDER_LEN];
+    display.translateUTF8ToBlocks(filtered, _title, sizeof(filtered));
+    display.drawTextEllipsized(0, 2, display.width() - 46, filtered);
+    display.drawTextRightAlign(display.width(), 2, "5s:menu");
+    display.fillRect(0, UI_TOPBAR_SEP_Y, display.width(), 1);
+
+    if (_menu) {
+      static const char* items[MENU_ITEMS] = {
+        "* Back", "* Remove last letter", "* Remove last word",
+        "* Send as MC", "* Send as text", "* Discard", "* Exit"
+      };
+      uiRenderScrollMenu(display, items, MENU_ITEMS, _menu_sel, _menu_scroll, MENU_VISIBLE);
+      return 80;
+    }
+
+    if (_text_len == 0 && _sym_len == 0) {
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawTextCentered(display.width() / 2, 30, "Start typing");
+      return 80;
+    }
+
+    renderStrip(display);
+    return 80;
+  }
+
+private:
+  // Draw the tail of the message: each letter's Morse with the decoded letter
+  // under it, right-aligned so the newest is always visible.
+  void renderStrip(DisplayDriver& display) {
+    const int total = _text_len + (_sym_len > 0 ? 1 : 0);
+    if (total == 0) return;
+
+    const char* toks[MSG_MAX + 1];
+    char        labels[MSG_MAX + 1];
+    int         cellw[MSG_MAX + 1];
+    const int gap = 6;
+
+    for (int i = 0; i < _text_len; i++) {
+      if (_text[i] == ' ') { toks[i] = "/"; labels[i] = 0; }
+      else                 { toks[i] = morseForChar(_text[i]); labels[i] = _text[i]; }
+    }
+    if (_sym_len > 0) {
+      toks[_text_len]   = _symbols;
+      labels[_text_len] = charForMorse(_symbols);
+    }
+    for (int i = 0; i < total; i++) {
+      int w = display.getTextWidth(toks[i][0] ? toks[i] : "?");
+      if (w < 5) w = 5;
+      cellw[i] = w;
+    }
+
+    const int avail = display.width() - 4;
+    int start = total - 1, used = 0;
+    for (int i = total - 1; i >= 0; i--) {
+      int need = cellw[i] + (i < total - 1 ? gap : 0);
+      if (used + need > avail && i != total - 1) break;
+      used += need;
+      start = i;
+    }
+
+    int x = display.width() - 2 - used;
+    if (x < 2) x = 2;
+    for (int i = start; i < total; i++) {
+      const char* tok = toks[i][0] ? toks[i] : "?";
+      display.setColor(DisplayDriver::LIGHT);
+      display.setCursor(x, MORSE_Y);
+      display.print(tok);
+      if (i == total - 1 && _sym_len > 0) {   // underline the letter being tapped
+        display.fillRect(x, MORSE_Y + 9, cellw[i], 1);
+      }
+      if (labels[i]) {
+        char lbl[2] = { labels[i], 0 };
+        display.drawTextCentered(x + cellw[i] / 2, LABEL_Y, lbl);
+      }
+      x += cellw[i] + gap;
+    }
   }
 };
 
@@ -1905,6 +2327,7 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
   splash = new SplashScreen(this);
   home = new HomeScreen(this, &rtc_clock, sensors, node_prefs);
   chan_view = new ChannelViewScreen(this);
+  morse_view = new MorseComposeScreen(this);
   node_info = new NodeInfoScreen(this);
   path_view = new PathScreen(this);
   matches_view = new MatchesScreen(this);
@@ -2068,6 +2491,39 @@ void UITask::closeChannelView() {
   _msgs.markRead(key);
   ((HomeScreen *) home)->gotoChannelsPage(key);
   setCurrScreen(home);
+}
+
+void UITask::openMorseCompose(const MsgRowKey& key, const char* title) {
+  ((MorseComposeScreen *) morse_view)->open(key, title);
+  setCurrScreen(morse_view);
+}
+
+void UITask::closeMorseCompose() {
+  ((ChannelViewScreen *) chan_view)->reopen();
+  setCurrScreen(chan_view);
+}
+
+// Send a UI-composed message to the row's target: a group channel, or the
+// contact behind a direct-message thread. Group messages are echoed into the
+// local store so the sender sees them in the thread.
+bool UITask::sendComposedText(const MsgRowKey& key, const char* text) {
+  if (text == NULL || text[0] == 0) return false;
+  uint32_t ts = rtc_clock.getCurrentTime();
+
+  if (key.channel_idx == DM_CHANNEL) {
+    ContactInfo* c = the_mesh.searchContactsByPrefix(key.sender);
+    if (c == NULL) return false;
+    uint32_t expected_ack = 0, est_timeout = 0;
+    int r = the_mesh.sendMessage(*c, ts, 0, text, expected_ack, est_timeout);
+    return r != MSG_SEND_FAILED;
+  }
+
+  ChannelDetails ch;
+  if (!the_mesh.getChannel(key.channel_idx, ch)) return false;
+  if (!the_mesh.sendGroupMessage(ts, ch.channel, the_mesh.getNodeName(), text, strlen(text)))
+    return false;
+  _msgs.add(key.channel_idx, the_mesh.getNodeName(), text, ts);   // local echo
+  return true;
 }
 
 void UITask::openNodeInfo(const ScanResult& r) {
@@ -2237,32 +2693,40 @@ void UITask::loop() {
   }
   _was_pairing = pairing;
 
+  // A screen that reads the button directly (Morse entry) still needs the
+  // detectors ticked so their state stays consistent, but their click/long-press
+  // events must not be mapped to actions or fire global side effects.
+  bool raw_btn = (curr && curr->rawButtonInput());
+  (void)raw_btn;
+
 #if UI_HAS_JOYSTICK
   int ev = user_btn.check();
-  if (ev == BUTTON_EVENT_CLICK) {
+  if (raw_btn) { /* consumed by the screen's poll() */ }
+  else if (ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_ENTER);
   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_ENTER);  // REVISIT: could be mapped to different key code
   }
   ev = joystick_left.check();
-  if (ev == BUTTON_EVENT_CLICK) {
+  if (!raw_btn && ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_LEFT);
-  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+  } else if (!raw_btn && ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_LEFT);
   }
   ev = joystick_right.check();
-  if (ev == BUTTON_EVENT_CLICK) {
+  if (!raw_btn && ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_RIGHT);
-  } else if (ev == BUTTON_EVENT_LONG_PRESS) {
+  } else if (!raw_btn && ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_RIGHT);
   }
   ev = back_btn.check();
-  if (ev == BUTTON_EVENT_TRIPLE_CLICK) {
+  if (!raw_btn && ev == BUTTON_EVENT_TRIPLE_CLICK) {
     c = handleTripleClick(KEY_SELECT);
   }
 #elif defined(PIN_USER_BTN)
   int ev = user_btn.check();
-  if (ev == BUTTON_EVENT_CLICK) {
+  if (raw_btn) { /* consumed by the screen's poll() */ }
+  else if (ev == BUTTON_EVENT_CLICK) {
     c = checkDisplayOn(KEY_NEXT);
   } else if (ev == BUTTON_EVENT_LONG_PRESS) {
     c = handleLongPress(KEY_ENTER);
@@ -2275,7 +2739,8 @@ void UITask::loop() {
 #if defined(PIN_USER_BTN_ANA)
   if (abs(millis() - _analogue_pin_read_millis) > 10) {
     int ev = analog_btn.check();
-    if (ev == BUTTON_EVENT_CLICK) {
+    if (raw_btn) { /* consumed by the screen's poll() */ }
+    else if (ev == BUTTON_EVENT_CLICK) {
       c = checkDisplayOn(KEY_NEXT);
     } else if (ev == BUTTON_EVENT_LONG_PRESS) {
       c = handleLongPress(KEY_ENTER);

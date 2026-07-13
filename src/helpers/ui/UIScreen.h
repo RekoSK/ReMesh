@@ -21,5 +21,8 @@ public:
   virtual int render(DisplayDriver& display) =0;   // return value is number of millis until next render
   virtual bool handleInput(char c) { return false; }
   virtual void poll() { }
+  // Screens that read the button directly (e.g. Morse entry) return true so the
+  // loop skips the normal click/long-press mapping and its side effects.
+  virtual bool rawButtonInput() { return false; }
 };
 
