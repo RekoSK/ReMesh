@@ -704,6 +704,52 @@ class MeshViewModel(application: Application) : AndroidViewModel(application) {
         return com.rekosk.remesh.data.MeshRepository.contactUri(raw.name, raw.publicKey, raw.type)
     }
 
+    // ---------------- chat "+" share menu ----------------
+
+    /**
+     * Text handed to the chat composer from another screen (the map share picker),
+     * waiting to be spliced into the draft. The chat screen consumes and clears it.
+     */
+    private val _composerInsert = MutableStateFlow<String?>(null)
+    val composerInsert: StateFlow<String?> = _composerInsert.asStateFlow()
+
+    fun requestComposerInsert(text: String) {
+        _composerInsert.value = text
+    }
+
+    fun consumeComposerInsert() {
+        _composerInsert.value = null
+    }
+
+    /**
+     * Our node as the `<publickey:type:name>` card the MeshCore apps paste into a chat
+     * when sharing contact info. Null until the handshake has returned SELF_INFO.
+     */
+    fun selfContactCard(): String? {
+        val info = repository.selfInfo.value ?: return null
+        val key = info.publicKey.joinToString("") { "%02x".format(it) }
+        return "<$key:${info.advType}:${info.name}>"
+    }
+
+    /** A contact we hold as the same `<publickey:type:name>` chat card, or null if unknown. */
+    fun contactCard(contactId: String): String? {
+        val raw = repository.rawContactById(contactId) ?: return null
+        val key = raw.publicKey.joinToString("") { "%02x".format(it) }
+        return "<$key:${raw.type}:${raw.name}>"
+    }
+
+    /** A held contact's full identity key in hex, for the share picker's subtitle. */
+    fun contactPublicKeyHex(contactId: String): String? =
+        repository.rawContactById(contactId)?.publicKey?.joinToString("") { "%02x".format(it) }
+
+    /** "48.14816, 17.10674" — locale-fixed so the decimal separator is always a dot. */
+    fun formatLocation(latE6: Int, lonE6: Int): String =
+        String.format(java.util.Locale.US, "%.5f, %.5f", latE6 / 1e6, lonE6 / 1e6)
+
+    /** The node-config coordinates as shareable text, or null while the node has no fix. */
+    fun selfLocationText(): String? =
+        selfLocation()?.let { (lat, lon) -> formatLocation(lat, lon) }
+
     // ---------------- node location ----------------
 
     /** Location updates queued while offline, keyed by "self" or a contact id. */

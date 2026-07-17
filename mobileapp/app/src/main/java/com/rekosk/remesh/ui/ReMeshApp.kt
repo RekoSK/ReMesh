@@ -85,6 +85,7 @@ private const val ROUTE_CONTACT_DETAIL = "contact"
 private const val ROUTE_SET_ROUTE = "set_route"
 private const val ROUTE_PICK_SELF_LOCATION = "location_picker/self"
 private const val ROUTE_PICK_CONTACT_LOCATION = "location_picker/contact"
+private const val ROUTE_PICK_SHARE_LOCATION = "location_picker/chat_share"
 private const val ROUTE_CONNECT = "connect"
 private const val ROUTE_SETTINGS = "settings"
 private const val ROUTE_SHARE_QR = "share_qr"
@@ -330,6 +331,22 @@ fun ReMeshApp(viewModel: MeshViewModel = viewModel()) {
                         navController.navigate("$ROUTE_MESSAGE_ROUTES/$conversationId/$messageId")
                     },
                     onOpenContact = { navController.navigate("$ROUTE_CONTACT_DETAIL/$conversationId") },
+                    onPickLocationFromMap = { navController.navigate(ROUTE_PICK_SHARE_LOCATION) },
+                )
+            }
+            composable(ROUTE_PICK_SHARE_LOCATION) {
+                // Starts from our node's position when known, so the map opens nearby.
+                val (lat, lon) = viewModel.selfLocation() ?: (0 to 0)
+                MapLocationPickerScreen(
+                    initialLatE6 = lat,
+                    initialLonE6 = lon,
+                    title = "Share location",
+                    onBack = { navController.popBackStack() },
+                    onConfirm = { newLat, newLon ->
+                        // The chat composer picks this up and splices it into the draft.
+                        viewModel.requestComposerInsert(viewModel.formatLocation(newLat, newLon))
+                        navController.popBackStack()
+                    },
                 )
             }
             composable(

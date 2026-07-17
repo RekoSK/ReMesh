@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
@@ -103,6 +104,7 @@ fun ChatScreen(
     onOpenHeardRepeats: (messageId: String) -> Unit,
     onShowMessageRoutes: (messageId: String) -> Unit = {},
     onOpenContact: () -> Unit = {},
+    onPickLocationFromMap: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val messages by viewModel.messagesFor(conversationId).collectAsStateWithLifecycle()
@@ -147,10 +149,54 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val inputFocus = remember { FocusRequester() }
 
+    // The composer's "+" share menu and the two full-screen pickers it opens.
+    var shareMenuOpen by remember { mutableStateOf(false) }
+    var showChannelPicker by remember { mutableStateOf(false) }
+    var showContactPicker by remember { mutableStateOf(false) }
+    val selfInfo by viewModel.selfInfo.collectAsStateWithLifecycle()
+    val channels by viewModel.channels.collectAsStateWithLifecycle()
+    // Refreshed when SELF_INFO changes; the offline fallback position rarely moves under us.
+    val selfLocationText = remember(selfInfo) { viewModel.selfLocationText() }
+    fun insertIntoDraft(text: String) {
+        draft = insertAtCursor(draft, text)
+    }
+
+    // Text handed back by the map share picker (it lives on another nav destination,
+    // so it can't touch the draft directly).
+    val composerInsert by viewModel.composerInsert.collectAsStateWithLifecycle()
+    LaunchedEffect(composerInsert) {
+        composerInsert?.let { text ->
+            insertIntoDraft(text)
+            viewModel.consumeComposerInsert()
+        }
+    }
+
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
         // Opening the chat, and any message arriving while it is open, counts as read.
         viewModel.markRead(conversationId)
+    }
+
+    if (showChannelPicker) {
+        ChannelPickerDialog(
+            channels = channels,
+            onDismiss = { showChannelPicker = false },
+            onPick = { channel ->
+                showChannelPicker = false
+                viewModel.channelShareUri(channel.index)?.let(::insertIntoDraft)
+            },
+        )
+    }
+    if (showContactPicker) {
+        ContactPickerDialog(
+            contacts = contacts,
+            publicKeyHexFor = viewModel::contactPublicKeyHex,
+            onDismiss = { showContactPicker = false },
+            onPick = { contact ->
+                showContactPicker = false
+                viewModel.contactCard(contact.id)?.let(::insertIntoDraft)
+            },
+        )
     }
 
     selected?.let { message ->
@@ -269,6 +315,45 @@ fun ChatScreen(
                 maxBytes = maxMessageBytes,
                 participants = participants,
                 colorForName = colorForName,
+                leadingIcon = {
+                    Box {
+                        IconButton(onClick = { shareMenuOpen = true }) {
+                            Icon(
+                                imageVector = Icons.Filled.AddCircleOutline,
+                                contentDescription = "Share into the chat",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        ChatShareMenu(
+                            expanded = shareMenuOpen,
+                            onDismiss = { shareMenuOpen = false },
+                            myContactInfoEnabled = selfInfo != null,
+                            myLocationEnabled = selfLocationText != null,
+                            shareChannelEnabled = channels.isNotEmpty(),
+                            shareContactEnabled = contacts.isNotEmpty(),
+                            onMyContactInfo = {
+                                shareMenuOpen = false
+                                viewModel.selfContactCard()?.let(::insertIntoDraft)
+                            },
+                            onMyLocation = {
+                                shareMenuOpen = false
+                                selfLocationText?.let(::insertIntoDraft)
+                            },
+                            onShareChannel = {
+                                shareMenuOpen = false
+                                showChannelPicker = true
+                            },
+                            onShareContact = {
+                                shareMenuOpen = false
+                                showContactPicker = true
+                            },
+                            onShareLocationFromMap = {
+                                shareMenuOpen = false
+                                onPickLocationFromMap()
+                            },
+                        )
+                    }
+                },
                 onSend = {
                     viewModel.send(conversationId, draft.text)
                     draft = TextFieldValue()
@@ -312,6 +397,14 @@ fun ChatScreen(
             }
         }
     }
+}
+
+/** Splices [text] into the draft at the cursor, replacing any selection. */
+private fun insertAtCursor(draft: TextFieldValue, text: String): TextFieldValue {
+    val start = draft.selection.min.coerceIn(0, draft.text.length)
+    val end = draft.selection.max.coerceIn(0, draft.text.length)
+    val newText = draft.text.replaceRange(start, end, text)
+    return TextFieldValue(newText, TextRange(start + text.length))
 }
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -509,6 +602,7 @@ private fun MessageInput(
     maxBytes: Int,
     participants: List<String>,
     colorForName: (String) -> Color,
+    leadingIcon: (@Composable () -> Unit)? = null,
     onSend: () -> Unit,
 ) {
     // The firmware truncates by UTF-8 bytes, so count bytes, not characters.
@@ -581,6 +675,7 @@ private fun MessageInput(
                     shape = RoundedCornerShape(28.dp),
                     maxLines = 4,
                     isError = over,
+                    leadingIcon = leadingIcon,
                     visualTransformation = MentionVisualTransformation(colorForName),
                 )
                 // Sending an over-length message would silently lose the tail, so block it.
